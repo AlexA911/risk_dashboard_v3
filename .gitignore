@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# PyCharm
+.idea/
+
+# OS
+Thumbs.db
+
+# Future PyInstaller output
+build/
+dist/
+*.spec
