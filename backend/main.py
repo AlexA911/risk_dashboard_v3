@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 
 from data import db_office
-from data import db_analyst  # get_analyst_table_for_tab, get_analyst_chart, get_analyst_products
+from data import db_analyst
+from data import db_rollview
 
 app = FastAPI(title="Risk Dashboard v3", version="3.0.0")
 
@@ -295,6 +296,47 @@ def analyst_products(
 # ─────────────────────────────────────────────────────────────────────────────
 # Cache management
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/analyst-product-chart")
+def analyst_product_chart(
+    analyst:    str   = Query(...),
+    office:     str   = Query(...),
+    product:    str   = Query(...),
+    confidence: float = Query(95.0),
+    lookback:   int   = Query(100),
+    days:       int   = Query(30),
+):
+    """EOD iVaR history for a single analyst x product."""
+    try:
+        key = f"analyst-product-chart:{analyst}:{office}:{product}:{confidence}:{lookback}:{days}"
+        df = get_cached(key, lambda: db_analyst.get_analyst_product_chart(
+            analyst, office, product, confidence, lookback, days))
+        return {"data": clean(df)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/roll-risk")
+def roll_risk(location: str = "Total"):
+    try:
+        key = f"roll-risk:{location}"
+        sections = get_cached(key, lambda: db_rollview.get_roll_risk(location))
+        # Sanitise NaN/Inf values in nested dicts
+        def sanitise(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            return v
+        clean_sections = [
+            {
+                "section": sec["section"],
+                "rows": [{k: sanitise(val) for k, val in row.items()} for row in sec["rows"]],
+            }
+            for sec in sections
+        ]
+        return {"sections": clean_sections}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
 
 @app.post("/api/cache/clear")
 def clear_cache():

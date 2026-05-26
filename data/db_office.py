@@ -102,7 +102,6 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
 
         def fetch_netted(confidence, lookback, date, eod, _acs=acs, _is_total=is_total):
             if _is_total:
-                # Futures First: firm-level netted rows written by ff_risk_db.py
                 if eod:
                     q = f"""
                         SELECT SUM(iVaR) AS iVaR, SUM(Margin) AS Margin
@@ -133,7 +132,6 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
                     """
                     p = [date, confidence, lookback] + _acs + [date, confidence, lookback]
             else:
-                # Individual office: Cumulus office-level netting group rows
                 if eod:
                     q = f"""
                         SELECT SUM(iVaR) AS iVaR, SUM(Margin) AS Margin
@@ -164,9 +162,8 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
         t95  = fetch_netted(95.0,  100, t1_95,          eod=True)
         c95  = fetch_netted(95.0,  100, today,           eod=False)
         if c95.empty or c95['iVaR'].iloc[0] is None:
-            c95 = s95.copy()   # fall back to last night's EOD
+            c95 = s95.copy()
 
-        # 100/10 is EOD only — no intraday, use SOD directly as current
         s100 = fetch_netted(100.0,  10, last_night_100,  eod=True)
         t100 = fetch_netted(100.0,  10, t1_100,          eod=True)
         c100 = s100.copy()
@@ -280,11 +277,6 @@ def get_metrics(location: str, confidence: float, lookback: int) -> dict:
 
 
 def get_vix_margin() -> dict:
-    """
-    Returns the current and SOD CBOE VIX margin at firm level.
-    current = latest intraday snapshot today (falls back to SOD if none).
-    sod     = EOD snapshot from last trading night.
-    """
     sod_query = """
         SELECT TOP 1 Margin
         FROM dbo.ProductRisk
@@ -319,10 +311,6 @@ def get_vix_margin() -> dict:
 
 
 def get_last_snapshot() -> dict:
-    """
-    Returns the Date and Time of the most recent snapshot in OfficeRisk.
-    Used by the frontend to display accurate "Data as of" timestamp.
-    """
     query = """
         SELECT TOP 1
             CONVERT(VARCHAR(10), Date, 23)  AS snapshot_date,
@@ -352,7 +340,7 @@ def get_rolling_chart(location: str, confidence: float, lookback: int,
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
 
     if days == 1:
-        # Last 24 hours of snapshots — EOD + intraday combined
+        # Last 24 hours — EOD + intraday combined
         query = """
             SELECT
                 CASE
@@ -364,35 +352,99 @@ def get_rolling_chart(location: str, confidence: float, lookback: int,
             WHERE Confidence = ?
               AND Lookback   = ?
               AND Office     = ?
-              AND CAST(Date AS DATETIME) + CAST(Time AS DATETIME)
-                  >= DATEADD(HOUR, -24, GETDATE())
+              AND DATEADD(SECOND,
+                    DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
+                    CAST(CAST(Date AS DATE) AS DATETIME)
+                  ) >= DATEADD(HOUR, -24, GETDATE())
             ORDER BY Date ASC, Time ASC
         """
         with get_connection() as conn:
             df = pd.read_sql(query, conn,
                              params=[confidence, lookback, office_val])
         return df
-    else:
-        query = """
-            SELECT TOP (?) CONVERT(VARCHAR(10), Date, 23) AS Date, VaR, Margin
-            FROM dbo.OfficeRisk
-            WHERE IsEOD      = 1
-              AND Confidence = ?
-              AND Lookback   = ?
-              AND Office     = ?
-            ORDER BY Date DESC
-        """
-        with get_connection() as conn:
-            df = pd.read_sql(query, conn,
-                             params=[days, confidence, lookback, office_val])
-        return df.iloc[::-1].reset_index(drop=True)
 
+
+    else:
+
+        # N-1 EOD points + intraday points across the full window — continuous line
+
+        eod_days = days - 1
+
+        eod_query = """
+
+                SELECT TOP (?)
+
+                    CONVERT(VARCHAR(10), Date, 23) AS Date,
+
+                    VaR, Margin,
+
+                    CAST(CAST(Date AS DATE) AS DATETIME) AS SortDT
+
+                FROM dbo.OfficeRisk
+
+                WHERE IsEOD      = 1
+
+                  AND Confidence = ?
+
+                  AND Lookback   = ?
+
+                  AND Office     = ?
+
+                ORDER BY Date DESC
+
+            """
+
+        intra_query = """
+
+                SELECT
+
+                    CONVERT(VARCHAR(10), Date, 23) + ' ' + CONVERT(VARCHAR(5), Time, 108) AS Date,
+
+                    VaR, Margin,
+
+                    DATEADD(SECOND,
+
+                        DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
+
+                        CAST(CAST(Date AS DATE) AS DATETIME)
+
+                    ) AS SortDT
+
+                FROM dbo.OfficeRisk
+
+                WHERE IsEOD      = 0
+
+                  AND Date       >= CAST(DATEADD(DAY, -(? - 1), CAST(GETDATE() AS DATE)) AS DATE)
+
+                  AND Confidence = ?
+
+                  AND Lookback   = ?
+
+                  AND Office     = ?
+
+            """
+
+        with get_connection() as conn:
+
+            eod_df = pd.read_sql(eod_query, conn,
+
+                                 params=[eod_days, confidence, lookback, office_val])
+
+            intra_df = pd.read_sql(intra_query, conn,
+
+                                   params=[days, confidence, lookback, office_val])
+
+        df = pd.concat([eod_df, intra_df], ignore_index=True)
+
+        df = df.sort_values("SortDT").drop(columns="SortDT").reset_index(drop=True)
+
+        return df
 
 def get_sector_chart(location: str, sector: str, confidence: float,
                      lookback: int, days: int) -> pd.DataFrame:
     """
     iVaR summed by sector from ProductRisk for chart display.
-    1D: intraday snapshots. 5D/1M: EOD snapshots.
+    1D: last 24 hours EOD + intraday. 5D/1M: EOD + today's intraday.
     Output columns: Date, iVaR, Margin
     """
     asset_classes = SECTOR_ASSET_CLASSES.get(sector, [])
@@ -418,18 +470,25 @@ def get_sector_chart(location: str, sector: str, confidence: float,
               AND Analyst    = Office
               AND Product   != Asset_Class
               AND Asset_Class IN ({ac_ph})
-              AND CAST(Date AS DATETIME) + CAST(Time AS DATETIME)
-                  >= DATEADD(HOUR, -24, GETDATE())
+              AND DATEADD(SECOND,
+                    DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
+                    CAST(CAST(Date AS DATE) AS DATETIME)
+                  ) >= DATEADD(HOUR, -24, GETDATE())
             GROUP BY IsEOD, Time
             ORDER BY Time ASC
         """
         params = [confidence, lookback, office_val] + asset_classes
+        with get_connection() as conn:
+            return pd.read_sql(query, conn, params=params)
+
     else:
-        query = f"""
-            SELECT
+        eod_days = days - 1
+        eod_query = f"""
+            SELECT TOP (?)
                 CONVERT(VARCHAR(10), Date, 23) AS Date,
                 SUM(iVaR) AS iVaR,
-                SUM(Margin) AS Margin
+                SUM(Margin) AS Margin,
+                CAST(CAST(Date AS DATE) AS DATETIME) AS SortDT
             FROM dbo.ProductRisk
             WHERE IsEOD      = 1
               AND Confidence = ?
@@ -439,20 +498,53 @@ def get_sector_chart(location: str, sector: str, confidence: float,
               AND Product   != Asset_Class
               AND Asset_Class IN ({ac_ph})
             GROUP BY Date
-            ORDER BY Date ASC
-            OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
+            ORDER BY Date DESC
         """
-        params = [confidence, lookback, office_val] + asset_classes + [days]
+        intra_query = f"""
+            SELECT
+                CONVERT(VARCHAR(5), Time, 108) AS Date,
+                SUM(iVaR) AS iVaR,
+                SUM(Margin) AS Margin,
+                DATEADD(SECOND,
+                    DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
+                    CAST(CAST(GETDATE() AS DATE) AS DATETIME)
+                ) AS SortDT
+            FROM dbo.ProductRisk
+            WHERE IsEOD      = 0
+              AND Date       = CAST(GETDATE() AS DATE)
+              AND Confidence = ?
+              AND Lookback   = ?
+              AND Office     = ?
+              AND Analyst    = Office
+              AND Product   != Asset_Class
+              AND Asset_Class IN ({ac_ph})
+              AND Time = (
+                  SELECT MAX(p2.Time)
+                  FROM dbo.ProductRisk p2
+                  WHERE p2.Office     = 'Futures First'
+                    AND p2.Date       = CAST(GETDATE() AS DATE)
+                    AND p2.Confidence = ?
+                    AND p2.Lookback   = ?
+                    AND p2.IsEOD      = 0
+              )
+            GROUP BY Time
+        """
+        with get_connection() as conn:
+            eod_df   = pd.read_sql(eod_query,   conn,
+                                   params=[eod_days, confidence, lookback, office_val] + asset_classes)
+            intra_df = pd.read_sql(intra_query, conn,
+                                   params=[confidence, lookback, office_val] + asset_classes + [confidence, lookback])
 
-    with get_connection() as conn:
-        return pd.read_sql(query, conn, params=params)
+        df = pd.concat([eod_df, intra_df], ignore_index=True)
+        df = df.sort_values("SortDT").drop(columns="SortDT").reset_index(drop=True)
+        return df
 
 
 def get_product_chart(location: str, product: str, confidence: float,
                       lookback: int, days: int) -> pd.DataFrame:
     """
     iVaR + Margin for a single product from ProductRisk for chart display.
-    1D: intraday snapshots. 5D/1M: EOD snapshots.
+    1D: last 24 hours. 5D/1M: EOD + today's intraday.
     Output columns: Date, iVaR, Margin
     """
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -472,18 +564,25 @@ def get_product_chart(location: str, product: str, confidence: float,
               AND pr.Office     = ?
               AND pr.Analyst    = pr.Office
               AND pr.Product    = ?
-              AND CAST(pr.Date AS DATETIME) + CAST(pr.Time AS DATETIME)
-                  >= DATEADD(HOUR, -24, GETDATE())
+              AND DATEADD(SECOND,
+                    DATEDIFF(SECOND, '00:00:00', CAST(pr.Time AS TIME)),
+                    CAST(CAST(pr.Date AS DATE) AS DATETIME)
+                  ) >= DATEADD(HOUR, -24, GETDATE())
             GROUP BY pr.IsEOD, pr.Time
             ORDER BY pr.Time ASC
         """
-        params = [confidence, lookback, office_val, product]
+        with get_connection() as conn:
+            return pd.read_sql(query, conn,
+                               params=[confidence, lookback, office_val, product])
+
     else:
-        query = """
-            SELECT
+        eod_days = days - 1
+        eod_query = """
+            SELECT TOP (?)
                 CONVERT(VARCHAR(10), Date, 23) AS Date,
                 SUM(iVaR) AS iVaR,
-                SUM(Margin) AS Margin
+                SUM(Margin) AS Margin,
+                CAST(CAST(Date AS DATE) AS DATETIME) AS SortDT
             FROM dbo.ProductRisk
             WHERE IsEOD      = 1
               AND Confidence = ?
@@ -492,13 +591,45 @@ def get_product_chart(location: str, product: str, confidence: float,
               AND Analyst    = Office
               AND Product    = ?
             GROUP BY Date
-            ORDER BY Date ASC
-            OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY
+            ORDER BY Date DESC
         """
-        params = [confidence, lookback, office_val, product, days]
+        intra_query = """
+            SELECT
+                CONVERT(VARCHAR(5), pr.Time, 108) AS Date,
+                SUM(pr.iVaR) AS iVaR,
+                SUM(pr.Margin) AS Margin,
+                DATEADD(SECOND,
+                    DATEDIFF(SECOND, '00:00:00', CAST(pr.Time AS TIME)),
+                    CAST(CAST(GETDATE() AS DATE) AS DATETIME)
+                ) AS SortDT
+            FROM dbo.ProductRisk pr
+            WHERE pr.IsEOD      = 0
+              AND pr.Date       = CAST(GETDATE() AS DATE)
+              AND pr.Confidence = ?
+              AND pr.Lookback   = ?
+              AND pr.Office     = ?
+              AND pr.Analyst    = pr.Office
+              AND pr.Product    = ?
+              AND pr.Time = (
+                  SELECT MAX(p2.Time)
+                  FROM dbo.ProductRisk p2
+                  WHERE p2.Office     = pr.Office
+                    AND p2.Date       = pr.Date
+                    AND p2.Confidence = pr.Confidence
+                    AND p2.Lookback   = pr.Lookback
+                    AND p2.IsEOD      = 0
+              )
+            GROUP BY pr.Time
+        """
+        with get_connection() as conn:
+            eod_df   = pd.read_sql(eod_query,   conn,
+                                   params=[eod_days, confidence, lookback, office_val, product])
+            intra_df = pd.read_sql(intra_query, conn,
+                                   params=[confidence, lookback, office_val, product])
 
-    with get_connection() as conn:
-        return pd.read_sql(query, conn, params=params)
+        df = pd.concat([eod_df, intra_df], ignore_index=True)
+        df = df.sort_values("SortDT").drop(columns="SortDT").reset_index(drop=True)
+        return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -802,7 +933,8 @@ SECTOR_ASSET_CLASSES = {
 
 SUBGROUP_NETTED_ASSET_CLASSES = {
     # Energy
-    "Oils":               ["Oils", "Oils - Crude", "WTI"],
+    "Oils":               ["Oils", "Oils - Crude"],
+    "WTI":                ["WTI"],
     "Natural Gas":        ["NG"],
     "Oil Refined":        ["Oils - Refined"],
     "Power & Carbon":     [],
@@ -834,7 +966,7 @@ SUBGROUP_NETTED_ASSET_CLASSES = {
 }
 
 SUBGROUP_ORDER = {
-    "Energy":     ["Oils", "Natural Gas", "Oil Refined", "Power & Carbon"],
+    "Energy":     ["Oils", "WTI", "Natural Gas", "Oil Refined", "Power & Carbon"],
     "Rates":      ["USD", "GBP", "EUR", "CAD", "AUD", "CHF"],
     "Metals":     ["Precious", "Base"],
     "Ags":        ["Grains", "Livestock", "Dairy"],
@@ -850,13 +982,14 @@ PRODUCT_SUBGROUP = {
     "Dubai Crude Oil":                                         "Oils",
     "ICE Brent Crude":                                         "Oils",
     "ICE Murban Crude Oil Futures":                            "Oils",
-    "ICE WTI Crude":                                           "Oils",
-    "ICE WTI Crude TAS":                                       "Oils",
-    "Micro WTI Crude Oil Futures":                             "Oils",
     "Murban Crude Oil":                                        "Oils",
-    "Nymex Brent Crude":                                       "Oils",
-    "Nymex Light Sweet":                                       "Oils",
-    "WTI Crude Oil":                                           "Oils",
+    # Energy: WTI
+    "Nymex Brent Crude":                                       "WTI",
+    "Nymex Light Sweet":                                       "WTI",
+    "WTI Crude Oil":                                           "WTI",
+    "ICE WTI Crude":                                           "WTI",
+    "ICE WTI Crude TAS":                                       "WTI",
+    "Micro WTI Crude Oil Futures":                             "WTI",
     # Energy: Natural Gas
     "ICE Dutch TTF Gas Futures":                               "Natural Gas",
     "ICE UK Natural Gas":                                      "Natural Gas",
@@ -1341,14 +1474,12 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
     # Interleave subgroup header rows with product rows
     result_rows = []
     for sg in all_subgroups:
-        # Header row
         hdr = netted[netted["Subgroup"] == sg]
         if not hdr.empty:
             h = hdr.iloc[0].to_dict()
-            h["Product"]    = sg
+            h["Product"]     = sg
             h["Asset_Class"] = None
             result_rows.append(h)
-        # Product rows for this subgroup
         for _, row in df[df["Subgroup"] == sg].iterrows():
             result_rows.append(row.to_dict())
 

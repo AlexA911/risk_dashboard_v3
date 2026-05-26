@@ -14,9 +14,9 @@ import { useState, useEffect, useCallback } from "react";
 import NavBar from "./components/NavBar";
 import MetricsRow from "./components/MetricsRow";
 import VarMarginChart from "./components/VarMarginChart";
-import LocationTable from "./components/LocationTable";
-import LocationTable_New from "./components/LocationTable_New";
 import LocationTableAG from "./components/LocationTableAG";
+import AnalystTab from "./components/AnalystTab";
+import RollRiskTab from "./components/RollRiskTab";
 import "./index.css";
 import { getLastSnapshot, clearCache } from "./api/client";
 
@@ -144,21 +144,8 @@ export default function App() {
 
       <div style={{ padding: "16px 20px" }}>
 
-        {/* ── Summary — sanity check, flat table ── */}
+        {/* ── Summary — full drill-down (previously Summary - New) ── */}
         {activePage === "Summary" && (
-          <>
-            <MetricsRow location={location} refreshKey={refreshKey} />
-            {chart}
-            <LocationTableAG
-              location={location}
-              refreshKey={refreshKey}
-              simple={true}
-            />
-          </>
-        )}
-
-        {/* ── Summary - New — full drill-down ── */}
-        {activePage === "Summary - New" && (
           <>
             <MetricsRow location={location} refreshKey={refreshKey} />
             {chart}
@@ -172,8 +159,18 @@ export default function App() {
           </>
         )}
 
+        {/* ── Analyst tab ── */}
+        {activePage === "Analyst" && (
+          <AnalystTab location={location} refreshKey={refreshKey} />
+        )}
+
+        {/* ── Roll Risk tab ── */}
+        {activePage === "Roll Risk" && (
+          <RollRiskTab location={location} refreshKey={refreshKey} />
+        )}
+
         {/* ── All other pages ── */}
-        {!["Summary", "Summary - New"].includes(activePage) && (
+        {!["Summary", "Summary - Old", "Analyst", "Roll Risk"].includes(activePage) && (
           <div style={{
             background: "#fff", borderRadius: 8, padding: 40,
             textAlign: "center", color: "#94a3b8", fontSize: 14,

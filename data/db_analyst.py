@@ -275,3 +275,30 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
         .sort_values("iVaR", ascending=False, key=abs)
         .reset_index(drop=True)
     )
+
+
+def get_analyst_product_chart(analyst: str, office: str, product: str,
+                               confidence: float, lookback: int,
+                               days: int = 30) -> pd.DataFrame:
+    """
+    EOD iVaR history for a single analyst x product over the last N trading days.
+    Used when a product row is clicked in the analyst detail panel.
+    Returns columns: Date, iVaR
+    """
+    query = """
+        SELECT TOP (?) CONVERT(VARCHAR(10), Date, 23) AS Date, SUM(iVaR) AS iVaR
+        FROM dbo.ProductRisk
+        WHERE IsEOD      = 1
+          AND Analyst    = ?
+          AND Office     = ?
+          AND Product    = ?
+          AND Confidence = ?
+          AND Lookback   = ?
+          AND Analyst   != Office
+        GROUP BY Date
+        ORDER BY Date DESC
+    """
+    with get_connection() as conn:
+        df = pd.read_sql(query, conn,
+                         params=[days, analyst, office, product, confidence, lookback])
+    return df.iloc[::-1].reset_index(drop=True)

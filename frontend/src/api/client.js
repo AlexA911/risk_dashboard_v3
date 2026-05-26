@@ -15,3 +15,12 @@ export const getLastSnapshot             = ()                                   
 export const getAssetClassTableGrouped   = (location)                                      => api.get("/api/asset-class-table-grouped", { params: { location } });
 export const getProductTableBySector     = (location, sector)                              => api.get("/api/product-table-by-sector",  { params: { location, sector } });
 export const clearCache                  = ()                                              => api.post("/api/cache/clear");
+
+// ── Roll Risk tab ─────────────────────────────────────────────────────────────
+export const getRollRisk                 = (location)                                      => api.get("/api/roll-risk",                 { params: { location } });
+
+// ── Analyst tab ───────────────────────────────────────────────────────────────
+export const getAnalysts                 = (location)                                      => api.get("/api/analysts",                  { params: { location } });
+export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",             { params: { analyst, office, confidence, lookback, days } });
+export const getAnalystProducts          = (analyst, office, confidence, lookback)         => api.get("/api/analyst-products",          { params: { analyst, office, confidence, lookback } });
+export const getAnalystProductChart      = (analyst, office, product, confidence, lookback, days) => api.get("/api/analyst-product-chart", { params: { analyst, office, product, confidence, lookback, days } });

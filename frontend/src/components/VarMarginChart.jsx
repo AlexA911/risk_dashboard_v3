@@ -2,6 +2,11 @@
  * VarMarginChart.jsx
  * Dual Y-axis line chart — VaR/iVaR (left) and Margin (right).
  * recharts — MUI wrapper.
+ *
+ * 1D toggle : last 24 hours — EOD snapshot (labelled 'EOD') + intraday HH:MM
+ * 5D/1M     : N-1 EOD dates + intraday for ALL days in window as a continuous line
+ *             Intraday points labelled 'YYYY-MM-DD HH:MM' from backend,
+ *             displayed as 'HH:MM' on axis, full datetime in tooltip.
  */
 import { useEffect, useState } from "react";
 import Box from "@mui/material/Box";
@@ -33,6 +38,72 @@ const TOGGLES = [
   { label: "1M",  days: 21 },
 ];
 
+// ── Label type detection ──────────────────────────────────────────────────────
+// 1D intraday:   "HH:MM"              e.g. "10:00"
+// 1D EOD:        "EOD"
+// 5D/1M intraday: "YYYY-MM-DD HH:MM"  e.g. "2026-05-20 10:00"
+// 5D/1M EOD:     "YYYY-MM-DD"         e.g. "2026-05-20"
+
+function isIntraday1D(val) {
+  return /^\d{2}:\d{2}$/.test(val);
+}
+function isIntraday5D(val) {
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(val);
+}
+function isEODDate(val) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(val);
+}
+
+// ── Sortable numeric key ──────────────────────────────────────────────────────
+function sortKey(val) {
+  if (!val) return 0;
+  if (val === "EOD") {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    d.setHours(23, 0, 0, 0);
+    return d.getTime();
+  }
+  if (isIntraday5D(val)) {
+    // "YYYY-MM-DD HH:MM" — replace space with T for native Date parsing
+    return new Date(val.replace(" ", "T")).getTime();
+  }
+  if (isIntraday1D(val)) {
+    const [h, m] = val.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  }
+  // YYYY-MM-DD — EOD, treat as midnight
+  return new Date(val).getTime();
+}
+
+// ── X-axis tick formatter ─────────────────────────────────────────────────────
+function fmtX(val) {
+  if (!val) return "";
+  if (val === "EOD") return "EOD";
+  if (isIntraday1D(val)) return val;                // "10:00" — show as-is
+  if (isIntraday5D(val)) return val.slice(11);      // "2026-05-20 10:00" → "10:00"
+  // YYYY-MM-DD — EOD date
+  const d = new Date(val);
+  if (isNaN(d)) return val;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+// ── Tooltip label formatter ───────────────────────────────────────────────────
+function fmtLabel(val) {
+  if (!val) return "";
+  if (val === "EOD") return "EOD (23:00)";
+  if (isIntraday1D(val)) return val;
+  if (isIntraday5D(val)) {
+    const d = new Date(val.replace(" ", "T"));
+    return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })
+      + " " + val.slice(11);
+  }
+  const d = new Date(val);
+  if (isNaN(d)) return val;
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
 export default function VarMarginChart({ location, chartLabel, chartSector, chartProduct, onReset, refreshKey }) {
   const [period,  setPeriod]  = useState("5D");
   const [data,    setData]    = useState([]);
@@ -47,10 +118,10 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
 
     const merge = ([r10, r100], key10, key100) => {
       const map = {};
-      r10.data.data.forEach(d => {
+      (r10.data.data  || []).forEach(d => {
         map[d.Date] = { Date: d.Date, [key10]: d.iVaR ?? d.VaR, Margin: d.Margin };
       });
-      r100.data.data.forEach(d => {
+      (r100.data.data || []).forEach(d => {
         if (map[d.Date]) {
           map[d.Date][key100] = d.iVaR ?? d.VaR;
           if (!map[d.Date].Margin) map[d.Date].Margin = d.Margin;
@@ -58,7 +129,8 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
           map[d.Date] = { Date: d.Date, [key100]: d.iVaR ?? d.VaR, Margin: d.Margin };
         }
       });
-      return Object.values(map).sort((a, b) => String(a.Date).localeCompare(String(b.Date)));
+      // Sort by numeric sort key — handles all mixed label formats correctly
+      return Object.values(map).sort((a, b) => sortKey(a.Date) - sortKey(b.Date));
     };
 
     const fetches = chartProduct
@@ -70,7 +142,6 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
     Promise.all(fetches)
       .then(results => {
         const merged = merge(results, "VaR_10D", "VaR_100D");
-        console.log("Chart data:", JSON.stringify(merged));
         setData(merged);
         setLoading(false);
       })
@@ -84,21 +155,8 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
   const varLabel10   = isDrillDown ? "iVaR · 10D 100%" : "VaR · 10D 100%";
   const subtitleMode = chartProduct ? "Product iVaR contribution"
                      : chartSector  ? "Sector iVaR contribution"
-                     : period === "1D" ? "Intraday snapshots"
-                     : "EOD snapshots";
-
-  const fmtX = (val) => {
-    if (!val) return "";
-    if (period === "1D") return val;
-    const d = new Date(val);
-    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-  };
-
-  const fmtLabel = (l) => {
-    if (period === "1D") return l;
-    const d = new Date(l);
-    return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-  };
+                     : period === "1D" ? "Last 24 hours"
+                     : "EOD + intraday";
 
   return (
     <Card elevation={0} sx={{ borderRadius: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
@@ -152,6 +210,7 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis
                 dataKey="Date"
+                type="category"
                 tickFormatter={fmtX}
                 tick={{ fontSize: 10, fill: "#64748b" }}
                 interval="preserveStartEnd"
@@ -179,9 +238,9 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
                 contentStyle={{ fontSize: 11, borderRadius: 6 }}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Line yAxisId="var" type="monotone" dataKey="VaR_100D" name={varLabel100} stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} connectNulls />
-              <Line yAxisId="var" type="monotone" dataKey="VaR_10D"  name={varLabel10}  stroke="#3b82f6" strokeWidth={1.5} strokeDasharray="4 2" dot={{ r: 3 }} connectNulls />
-              <Line yAxisId="margin" type="monotone" dataKey="Margin" name="Initial Margin" stroke="#1e293b" strokeWidth={1.5} dot={{ r: 3 }} connectNulls />
+              <Line yAxisId="var"    type="monotone" dataKey="VaR_100D" name={varLabel100}    stroke="#ef4444" strokeWidth={2}   dot={{ r: 3 }} connectNulls />
+              <Line yAxisId="var"    type="monotone" dataKey="VaR_10D"  name={varLabel10}      stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 3 }} strokeDasharray="4 2" connectNulls />
+              <Line yAxisId="margin" type="monotone" dataKey="Margin"   name="Initial Margin" stroke="#1e293b" strokeWidth={1.5} dot={{ r: 3 }} connectNulls />
             </ComposedChart>
           </ResponsiveContainer>
         )}
