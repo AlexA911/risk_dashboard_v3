@@ -3,10 +3,13 @@
  * Dual Y-axis line chart — VaR/iVaR (left) and Margin (right).
  * recharts — MUI wrapper.
  *
- * 1D toggle : last 24 hours — EOD snapshot (labelled 'EOD') + intraday HH:MM
- * 5D/1M     : N-1 EOD dates + intraday for ALL days in window as a continuous line
+ * 1D toggle : yesterday EOD (23:00) anchor → today's intraday runs.
+ *             SQL anchors to last EOD date (not rolling -24h) so prior-evening
+ *             intraday runs don't bleed in. Points labelled 'EOD' or 'HH:MM'.
+ * 5D/1M     : N-1 EOD dates + intraday for ALL days in window as a continuous line.
  *             Intraday points labelled 'YYYY-MM-DD HH:MM' from backend,
  *             displayed as 'HH:MM' on axis, full datetime in tooltip.
+ *             ReferenceLine marks today's date boundary on 5D/1M.
  */
 import { useEffect, useState } from "react";
 import Box from "@mui/material/Box";
@@ -17,7 +20,7 @@ import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { getRollingChart, getSectorChart, getProductChart } from "../api/client";
 
@@ -39,19 +42,16 @@ const TOGGLES = [
 ];
 
 // ── Label type detection ──────────────────────────────────────────────────────
-// 1D intraday:   "HH:MM"              e.g. "10:00"
-// 1D EOD:        "EOD"
+// 1D intraday:    "HH:MM"             e.g. "10:00"
+// 1D EOD:         "EOD"
 // 5D/1M intraday: "YYYY-MM-DD HH:MM"  e.g. "2026-05-20 10:00"
-// 5D/1M EOD:     "YYYY-MM-DD"         e.g. "2026-05-20"
+// 5D/1M EOD:      "YYYY-MM-DD"        e.g. "2026-05-20"
 
 function isIntraday1D(val) {
   return /^\d{2}:\d{2}$/.test(val);
 }
 function isIntraday5D(val) {
   return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(val);
-}
-function isEODDate(val) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(val);
 }
 
 // ── Sortable numeric key ──────────────────────────────────────────────────────
@@ -64,7 +64,6 @@ function sortKey(val) {
     return d.getTime();
   }
   if (isIntraday5D(val)) {
-    // "YYYY-MM-DD HH:MM" — replace space with T for native Date parsing
     return new Date(val.replace(" ", "T")).getTime();
   }
   if (isIntraday1D(val)) {
@@ -73,7 +72,7 @@ function sortKey(val) {
     d.setHours(h, m, 0, 0);
     return d.getTime();
   }
-  // YYYY-MM-DD — EOD, treat as midnight
+  // YYYY-MM-DD — EOD date, treat as midnight
   return new Date(val).getTime();
 }
 
@@ -129,7 +128,6 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
           map[d.Date] = { Date: d.Date, [key100]: d.iVaR ?? d.VaR, Margin: d.Margin };
         }
       });
-      // Sort by numeric sort key — handles all mixed label formats correctly
       return Object.values(map).sort((a, b) => sortKey(a.Date) - sortKey(b.Date));
     };
 
@@ -155,8 +153,15 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
   const varLabel10   = isDrillDown ? "iVaR · 10D 100%" : "VaR · 10D 100%";
   const subtitleMode = chartProduct ? "Product iVaR contribution"
                      : chartSector  ? "Sector iVaR contribution"
-                     : period === "1D" ? "Last 24 hours"
+                     : period === "1D" ? "Yesterday EOD → now"
                      : "EOD + intraday";
+
+  // For 5D/1M: find the label of the first intraday point for today so we can
+  // draw a vertical "today starts here" reference line at the day boundary
+  const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const todayBoundaryLabel = period !== "1D"
+    ? (data.find(d => isIntraday5D(d.Date) && d.Date.startsWith(todayStr))?.Date ?? null)
+    : null;
 
   return (
     <Card elevation={0} sx={{ borderRadius: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
@@ -238,6 +243,19 @@ export default function VarMarginChart({ location, chartLabel, chartSector, char
                 contentStyle={{ fontSize: 11, borderRadius: 6 }}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
+
+              {/* Today boundary line — only on 5D/1M when we have intraday data */}
+              {todayBoundaryLabel && (
+                <ReferenceLine
+                  x={todayBoundaryLabel}
+                  yAxisId="var"
+                  stroke="#94a3b8"
+                  strokeDasharray="4 3"
+                  strokeWidth={1}
+                  label={{ value: "Today", position: "top", fontSize: 9, fill: "#94a3b8" }}
+                />
+              )}
+
               <Line yAxisId="var"    type="monotone" dataKey="VaR_100D" name={varLabel100}    stroke="#ef4444" strokeWidth={2}   dot={{ r: 3 }} connectNulls />
               <Line yAxisId="var"    type="monotone" dataKey="VaR_10D"  name={varLabel10}      stroke="#3b82f6" strokeWidth={1.5} dot={{ r: 3 }} strokeDasharray="4 2" connectNulls />
               <Line yAxisId="margin" type="monotone" dataKey="Margin"   name="Initial Margin" stroke="#1e293b" strokeWidth={1.5} dot={{ r: 3 }} connectNulls />

@@ -6,6 +6,9 @@
  *   - a section summary row (_rowType: "section")  — Cumulus netted total
  *   - subgroup header rows  (_rowType: "subgroup") — per currency/index group
  *   - product rows          (_rowType: "product")
+ *
+ * Clicking a product row opens VarMarginChart for that product below the section.
+ * Clicking it again (or the reset link) closes the chart.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -21,6 +24,7 @@ import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import { getRollRisk } from "../api/client";
+import VarMarginChart from "./VarMarginChart";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -77,18 +81,18 @@ function fmtDeltaK(delta) {
   };
 }
 
-// ─── Derive top-bar metrics from sections data ────────────────────────────────
-// Uses the section-level row (_rowType: "section") for the true Cumulus netted figure.
+// ─── Derive top-bar metrics ───────────────────────────────────────────────────
+// Reads from _rowType === "section" for true Cumulus netted totals.
 
 function deriveMetrics(sections) {
   const totals = { margin: 0, marginDelta: 0, var: 0, varDelta: 0 };
   const bySection = {};
 
   for (const sec of sections) {
-    const sectionRow = sec.rows.find(r => r._rowType === "section");
-    const secVar         = sectionRow?.VaR_100D    ?? 0;
-    const secVarDelta    = sectionRow?.Delta_100D  ?? 0;
-    const secMargin      = sectionRow?.Margin      ?? 0;
+    const sectionRow     = sec.rows.find(r => r._rowType === "section");
+    const secVar         = sectionRow?.VaR_100D     ?? 0;
+    const secVarDelta    = sectionRow?.Delta_100D   ?? 0;
+    const secMargin      = sectionRow?.Margin       ?? 0;
     const secMarginDelta = sectionRow?.Delta_Margin ?? 0;
 
     bySection[sec.section] = {
@@ -108,15 +112,12 @@ function deriveMetrics(sections) {
 
 function RollMetricCard({ label, value, change, colour }) {
   return (
-    <Card
-      elevation={0}
-      sx={{
-        borderRadius: 2,
-        borderTop: `3px solid ${colour}`,
-        boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-        background: "#fff",
-      }}
-    >
+    <Card elevation={0} sx={{
+      borderRadius: 2,
+      borderTop: `3px solid ${colour}`,
+      boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+      background: "#fff",
+    }}>
       <CardContent sx={{ p: "12px 14px !important" }}>
         <Typography sx={{
           fontSize: 10, fontWeight: 600, color: "#64748b",
@@ -128,10 +129,7 @@ function RollMetricCard({ label, value, change, colour }) {
           {value}
         </Typography>
         {change ? (
-          <Typography sx={{
-            fontSize: 10, fontWeight: 500,
-            color: change.up ? "#ef4444" : "#22c55e",
-          }}>
+          <Typography sx={{ fontSize: 10, fontWeight: 500, color: change.up ? "#ef4444" : "#22c55e" }}>
             {change.text}
           </Typography>
         ) : (
@@ -178,13 +176,13 @@ function DeltaRenderer({ value, data }) {
 function NumRenderer({ value, data }) {
   if (value === null || value === undefined)
     return <span style={{ color: "#94a3b8" }}>—</span>;
-  const isSection = data?._rowType === "section";
+  const isSection  = data?._rowType === "section";
   const isSubgroup = data?._rowType === "subgroup";
   return (
     <span style={{
       fontWeight: (isSection || isSubgroup) ? 700 : 400,
-      color: isSection ? "#0f172a" : isSubgroup ? "#1e293b" : "#334155",
-      fontSize: isSection ? 12 : 11,
+      color:      isSection ? "#0f172a" : isSubgroup ? "#1e293b" : "#334155",
+      fontSize:   isSection ? 12 : 11,
     }}>
       {Math.round(Math.abs(value)).toLocaleString("en-GB")}
     </span>
@@ -192,18 +190,12 @@ function NumRenderer({ value, data }) {
 }
 
 function ProductNameRenderer({ value, data }) {
-  const colour = data?._sectionColour ?? "#94a3b8";
+  const colour    = data?._sectionColour ?? "#94a3b8";
+  const isProduct = data?._rowType === "product";
 
   if (data?._rowType === "section") {
-    // Full-width summary row — bold, larger, section colour
     return (
-      <span style={{
-        color: colour,
-        fontWeight: 800,
-        fontSize: 12,
-        letterSpacing: "0.04em",
-        paddingLeft: 4,
-      }}>
+      <span style={{ color: colour, fontWeight: 800, fontSize: 12, letterSpacing: "0.04em", paddingLeft: 4 }}>
         {value}
       </span>
     );
@@ -213,8 +205,7 @@ function ProductNameRenderer({ value, data }) {
     return (
       <span style={{
         color: colour, fontWeight: 700, fontSize: 10,
-        letterSpacing: "0.06em", textTransform: "uppercase",
-        paddingLeft: 8,
+        letterSpacing: "0.06em", textTransform: "uppercase", paddingLeft: 8,
       }}>
         {value}
       </span>
@@ -222,14 +213,13 @@ function ProductNameRenderer({ value, data }) {
   }
 
   return (
-    <Box sx={{ pl: 3 }}>
+    <Box sx={{ pl: 3, display: "flex", alignItems: "center", cursor: "pointer" }}>
       <span style={{ color: colour, marginRight: 6 }}>└</span>
       <span style={{ color: "#334155", fontSize: 11 }}>{value}</span>
       {data?.Asset_Class && (
-        <span style={{ color: "#94a3b8", marginLeft: 6, fontSize: 10 }}>
-          {data.Asset_Class}
-        </span>
+        <span style={{ color: "#94a3b8", marginLeft: 6, fontSize: 10 }}>{data.Asset_Class}</span>
       )}
+      <span style={{ color: "#3b82f6", marginLeft: 8, fontSize: 9, opacity: 0.7 }}>▶ chart</span>
     </Box>
   );
 }
@@ -320,9 +310,11 @@ function VarToggle({ varMode, setVarMode }) {
 
 // ─── Row styling ──────────────────────────────────────────────────────────────
 
-function makeGetRowStyle() {
+function makeGetRowStyle(selectedProduct) {
   return ({ data }) => {
-    const colour = data?._sectionColour ?? "#94a3b8";
+    const colour    = data?._sectionColour ?? "#94a3b8";
+    const selected  = data?._rowType === "product" && data?.Product === selectedProduct;
+
     if (data?._rowType === "section") {
       return {
         background:   `${colour}1a`,
@@ -337,6 +329,14 @@ function makeGetRowStyle() {
         borderBottom: `1px solid ${colour}30`,
       };
     }
+    if (selected) {
+      return {
+        background:   `${colour}20`,
+        borderLeft:   `3px solid ${colour}`,
+        borderBottom: "1px solid #e9edf2",
+        fontWeight:   700,
+      };
+    }
     return {
       borderLeft:   `3px solid ${colour}40`,
       background:   "#f8fafc",
@@ -345,13 +345,83 @@ function makeGetRowStyle() {
   };
 }
 
+// ─── Section card ─────────────────────────────────────────────────────────────
+
+function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduct, location, refreshKey }) {
+  const colour      = SECTION_COLOURS[sec.section] ?? "#94a3b8";
+  const getRowStyle = useCallback(makeGetRowStyle(selectedProduct), [selectedProduct]);
+
+  const onRowClicked = useCallback(({ data }) => {
+    if (data?._rowType !== "product") return;
+    // Toggle: clicking the same product again closes the chart
+    setSelectedProduct(prev =>
+      prev?.product === data.Product && prev?.section === sec.section
+        ? null
+        : { product: data.Product, section: sec.section }
+    );
+  }, [sec.section, setSelectedProduct]);
+
+  const isChartOpen = selectedProduct?.section === sec.section;
+
+  return (
+    <Card elevation={0} sx={{ borderRadius: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+      <CardContent sx={{ p: "16px !important" }}>
+
+        {/* Section header */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
+          <Box sx={{ width: 10, height: 10, borderRadius: "50%", background: colour, flexShrink: 0 }} />
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+            {sec.section}
+          </Typography>
+        </Box>
+
+        {sec.rows.length === 0 ? (
+          <Typography sx={{ color: "#94a3b8", fontSize: 12, p: 1 }}>No data available.</Typography>
+        ) : (
+          <Box className="ag-theme-alpine" sx={{ width: "100%", ...GRID_VARS }}>
+            <AgGridReact
+              theme="legacy"
+              rowData={sec.rows}
+              columnDefs={colDefs}
+              defaultColDef={DEFAULT_COL_DEF}
+              domLayout="autoHeight"
+              getRowStyle={getRowStyle}
+              onRowClicked={onRowClicked}
+              suppressCellFocus
+              suppressHorizontalScroll
+              headerHeight={30}
+              groupHeaderHeight={24}
+            />
+          </Box>
+        )}
+
+        {/* Chart — shown when a product in this section is selected */}
+        {isChartOpen && (
+          <Box sx={{ mt: 2 }}>
+            <VarMarginChart
+              location={location}
+              chartProduct={selectedProduct.product}
+              chartLabel={selectedProduct.product}
+              onReset={() => setSelectedProduct(null)}
+              refreshKey={refreshKey}
+            />
+          </Box>
+        )}
+
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function RollRiskTab({ location, refreshKey }) {
-  const [sections,  setSections]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [error,     setError]     = useState(null);
-  const [varMode,   setVarMode]   = useState("100D");
+  const [sections,         setSections]         = useState([]);
+  const [loading,          setLoading]          = useState(true);
+  const [error,            setError]            = useState(null);
+  const [varMode,          setVarMode]          = useState("100D");
+  // selectedProduct: { product: string, section: string } | null
+  const [selectedProduct,  setSelectedProduct]  = useState(null);
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -370,8 +440,10 @@ export default function RollRiskTab({ location, refreshKey }) {
       .catch(e => { setError(e.message); setLoading(false); });
   }, [location, refreshKey]);
 
-  const colDefs     = useMemo(() => buildColumns(varMode), [varMode]);
-  const getRowStyle = useCallback(makeGetRowStyle(), []);
+  // Reset selected product when location changes
+  useEffect(() => { setSelectedProduct(null); }, [location]);
+
+  const colDefs = useMemo(() => buildColumns(varMode), [varMode]);
 
   if (loading) return <Box sx={{ p: 2.5, color: "#94a3b8", fontSize: 12 }}>Loading...</Box>;
   if (error)   return <Box sx={{ p: 2, color: "#ef4444", fontSize: 12 }}>Error: {error}</Box>;
@@ -396,47 +468,19 @@ export default function RollRiskTab({ location, refreshKey }) {
       {/* ── Section cards ── */}
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
         {sections.map(sec => (
-          <Card
+          <SectionCard
             key={sec.section}
-            elevation={0}
-            sx={{ borderRadius: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-          >
-            <CardContent sx={{ p: "16px !important" }}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
-                <Box sx={{
-                  width: 10, height: 10, borderRadius: "50%",
-                  background: SECTION_COLOURS[sec.section] ?? "#94a3b8",
-                  flexShrink: 0,
-                }} />
-                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                  {sec.section}
-                </Typography>
-              </Box>
-
-              {sec.rows.length === 0 ? (
-                <Typography sx={{ color: "#94a3b8", fontSize: 12, p: 1 }}>
-                  No data available.
-                </Typography>
-              ) : (
-                <Box className="ag-theme-alpine" sx={{ width: "100%", ...GRID_VARS }}>
-                  <AgGridReact
-                    theme="legacy"
-                    rowData={sec.rows}
-                    columnDefs={colDefs}
-                    defaultColDef={DEFAULT_COL_DEF}
-                    domLayout="autoHeight"
-                    getRowStyle={getRowStyle}
-                    suppressCellFocus
-                    suppressHorizontalScroll
-                    headerHeight={30}
-                    groupHeaderHeight={24}
-                  />
-                </Box>
-              )}
-            </CardContent>
-          </Card>
+            sec={sec}
+            colDefs={colDefs}
+            varMode={varMode}
+            selectedProduct={selectedProduct}
+            setSelectedProduct={setSelectedProduct}
+            location={location}
+            refreshKey={refreshKey}
+          />
         ))}
       </Box>
+
     </Box>
   );
 }
