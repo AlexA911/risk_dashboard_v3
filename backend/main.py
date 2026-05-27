@@ -309,6 +309,39 @@ def analyst_products(
     except Exception as e:
         raise HTTPException(500, str(e))
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HAWK P&L — analyst level (from parquet cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/hawk-analyst-pnl")
+def hawk_analyst_pnl(location: str = "Total"):
+    try:
+        key = f"hawk-analyst-pnl:{location}"
+        df = get_cached(key, lambda: db_hawk.get_analyst_pnl(location))
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK-ANALYST-PNL ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HAWK P&L — analyst product level YTD (from parquet cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/hawk-analyst-product-pnl")
+def hawk_analyst_product_pnl(analyst: str = Query(...)):
+    try:
+        key = f"hawk-analyst-product-pnl:{analyst}"
+        df = get_cached(key, lambda: db_hawk.get_analyst_product_pnl(analyst))
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK-ANALYST-PRODUCT-PNL ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Roll Risk
 # ─────────────────────────────────────────────────────────────────────────────

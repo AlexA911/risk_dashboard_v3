@@ -413,6 +413,8 @@ def _make_product_row(row) -> dict:
         "Margin":          row["Margin"],
         "Delta_Margin":    row["Delta_Margin"],
         "Delta_Margin_t1": row["Delta_Margin_t1"],
+        "_pnl1d":          None,  # placeholder — HAWK API not yet wired
+        "_pnl5d":          None,  # placeholder — HAWK API not yet wired
     }
 
 
@@ -474,6 +476,8 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
             "Margin":          sec_mar_cur,
             "Delta_Margin":    _d(sec_mar_cur, sec_mar_sod),
             "Delta_Margin_t1": _d(sec_mar_cur, sec_mar_t1),
+            "_pnl1d":          None,
+            "_pnl5d":          None,
         }
 
         rows = [section_row]
@@ -502,6 +506,8 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
                 "Margin":          mar_cur,
                 "Delta_Margin":    _d(mar_cur, mar_sod),
                 "Delta_Margin_t1": _d(mar_cur, mar_t1),
+                "_pnl1d":          None,
+                "_pnl5d":          None,
             })
 
             for _, row in df[df["Subgroup"] == sg].sort_values(
@@ -558,6 +564,8 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
             "Margin":          sec_mar_cur,
             "Delta_Margin":    _d(sec_mar_cur, sec_mar_sod),
             "Delta_Margin_t1": _d(sec_mar_cur, sec_mar_t1),
+            "_pnl1d":          None,
+            "_pnl5d":          None,
         }
 
         # ── Underlying products filtered to bonds / equities ──────────────────

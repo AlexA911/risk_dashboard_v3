@@ -26,7 +26,8 @@ export const getAnalysts                 = (location)                           
 export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",             { params: { analyst, office, confidence, lookback, days } });
 export const getAnalystProducts          = (analyst, office, confidence, lookback)         => api.get("/api/analyst-products",          { params: { analyst, office, confidence, lookback } });
 export const getAnalystProductChart      = (analyst, office, product, confidence, lookback, days) => api.get("/api/analyst-product-chart", { params: { analyst, office, product, confidence, lookback, days } });
-
+export const getHawkAnalystPnl           = (location)                                      => api.get("/api/hawk-analyst-pnl",         { params: { location } });
+export const getHawkAnalystProductPnl    = (analyst)                                       => api.get("/api/hawk-analyst-product-pnl",  { params: { analyst } });
 
 // ── Hawk API  ─────────────────────────────────────────────────────────────────
 export const getHawkOfficePnl            = ()                                              => api.get("/api/hawk-office-pnl");

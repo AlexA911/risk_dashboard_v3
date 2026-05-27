@@ -9,8 +9,12 @@ Tables used:
 Follows the same patterns as db_var.py:
   - get_connection() used as a context manager inside each function
   - Returns pd.DataFrame (not raw dicts)
-  - EXCLUDED_OFFICES + FUTURES_FIRST_OFFICE from config
+  - EXCLUDED_OFFICES + FUTURES_FIRST_OFFICE from reference
   - EOD dates resolved via OfficeRisk (same as db_var._get_latest_eod_dates)
+
+Note: Cumulus only computes intraday VaR for the top analysts by VaR size.
+Analysts not in the intraday run fall back to SOD values. IsIntraday=False
+flags these rows so the frontend can display them differently.
 """
 
 import pandas as pd
@@ -56,7 +60,8 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
       Office, Analyst,
       VaR_10D,  Delta_10D,  Delta_10D_t1,
       VaR_100D, Delta_100D, Delta_100D_t1,
-      Margin,   Delta_Margin, Delta_Margin_t1
+      Margin,   Delta_Margin, Delta_Margin_t1,
+      IsIntraday  — False if analyst not in intraday run (showing SOD fallback)
     """
     today = _today()
 
@@ -70,7 +75,7 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
 
     if location == "Total":
         where  = f"Office NOT IN ({_excl_ph()}) AND Office != ?"
-        params = EXCLUDED_OFFICES + [FUTURES_FIRST_OFFICE]
+        params = list(EXCLUDED_OFFICES) + [FUTURES_FIRST_OFFICE]
     else:
         where  = "Office = ?"
         params = [location]
@@ -118,6 +123,9 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
     cur_95  = fetch_intraday(95.0,  100)
     cur_100 = fetch_intraday(100.0,  10)
 
+    # Capture which analysts are in the intraday run BEFORE any fallback
+    intraday_analysts = set(cur_95["Analyst"].tolist()) if not cur_95.empty else set()
+
     if cur_95.empty:  cur_95  = sod_95.copy()
     if cur_100.empty: cur_100 = sod_100.copy()
 
@@ -138,6 +146,12 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
         .merge(cur_100[keys + ["_var10_cur"]],                   on=keys, how="outer")
     )
 
+    # Per-analyst SOD fallback — analysts not in intraday run show SOD as current
+    # Deltas will be zero for these analysts (correct — we don't know intraday change)
+    df["_var100_cur"] = df["_var100_cur"].fillna(df["_var100_sod"])
+    df["_var10_cur"]  = df["_var10_cur"].fillna(df["_var10_sod"])
+    df["_margin_cur"] = df["_margin_cur"].fillna(df["_margin_sod"])
+
     df["VaR_100D"]        = df["_var100_cur"]
     df["Delta_100D"]      = df["_var100_cur"] - df["_var100_sod"]
     df["Delta_100D_t1"]   = df["_var100_cur"] - df["_var100_t1"]
@@ -148,11 +162,15 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
     df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
     df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
 
+    # Flag analysts not in intraday run
+    df["IsIntraday"] = df["Analyst"].isin(intraday_analysts)
+
     return (
         df[keys + [
             "VaR_10D",  "Delta_10D",  "Delta_10D_t1",
             "VaR_100D", "Delta_100D", "Delta_100D_t1",
             "Margin",   "Delta_Margin", "Delta_Margin_t1",
+            "IsIntraday",
         ]]
         .sort_values("VaR_100D", ascending=False)
         .reset_index(drop=True)
@@ -265,10 +283,10 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
         .merge(t1_[keys + ["_ivar_t1",  "_margin_t1"]],  on=keys, how="left")
     )
 
-    df["iVaR"]        = df["_ivar_cur"]
-    df["Delta_iVaR"]  = df["_ivar_cur"] - df["_ivar_sod"]
+    df["iVaR"]          = df["_ivar_cur"]
+    df["Delta_iVaR"]    = df["_ivar_cur"] - df["_ivar_sod"]
     df["Delta_iVaR_t1"] = df["_ivar_cur"] - df["_ivar_t1"]
-    df["Margin"]      = df["_margin_cur"]
+    df["Margin"]        = df["_margin_cur"]
 
     return (
         df[keys + ["iVaR", "Delta_iVaR", "Delta_iVaR_t1", "Margin"]]

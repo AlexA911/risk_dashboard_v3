@@ -3,6 +3,10 @@
  * Side-by-side layout: analyst table (left) + detail panel (right).
  * Clicking a product row switches the VaR chart to that product's iVaR history.
  * Axis labels auto-scale: raw / K / M depending on data magnitude.
+ *
+ * P&L columns (1D Gross, 5D Cumulative, YTD) sourced from HAWK parquet cache
+ * via /api/hawk-analyst-pnl. Fetched in parallel with VaR and merged by Analyst.
+ * Product breakdown includes YTD P&L from /api/hawk-analyst-product-pnl.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -20,7 +24,10 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 
-import { getAnalysts, getAnalystChart, getAnalystProducts, getAnalystProductChart } from "../api/client";
+import {
+  getAnalysts, getAnalystChart, getAnalystProducts, getAnalystProductChart,
+  getHawkAnalystPnl, getHawkAnalystProductPnl,
+} from "../api/client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -48,9 +55,9 @@ function makeTooltipFormatter(data, key, label) {
 
 function AnalystNameRenderer({ value, data }) {
   return (
-    <Box sx={{ pl: 1 }}>
-      <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#0f172a", lineHeight: 1.2 }}>{value}</Typography>
-      <Typography sx={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.2 }}>{data?.Office}</Typography>
+    <Box sx={{ pl: 1, overflow: "hidden" }}>
+      <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#0f172a", lineHeight: 1.3, whiteSpace: "nowrap" }}>{value}</Typography>
+      <Typography sx={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.3, whiteSpace: "nowrap" }}>{data?.Office}</Typography>
     </Box>
   );
 }
@@ -58,6 +65,17 @@ function AnalystNameRenderer({ value, data }) {
 function NumRenderer({ value }) {
   if (value === null || value === undefined) return <span style={{ color: "#94a3b8" }}>—</span>;
   return <span>{Math.round(Math.abs(value)).toLocaleString("en-GB")}</span>;
+}
+
+function VaRRenderer({ value, data }) {
+  if (value === null || value === undefined) return <span style={{ color: "#94a3b8" }}>—</span>;
+  const muted = data?.IsIntraday === false;
+  return (
+    <span style={{ color: muted ? "#94a3b8" : "#0f172a" }}
+      title={muted ? "Intraday VaR not computed — showing last EOD" : undefined}>
+      {Math.round(Math.abs(value)).toLocaleString("en-GB")}
+    </span>
+  );
 }
 
 function DeltaRenderer({ value }) {
@@ -70,14 +88,13 @@ function DeltaRenderer({ value }) {
   );
 }
 
-function ProductNameRenderer({ value, data }) {
+function PnlRenderer({ value }) {
+  if (value === null || value === undefined) return <span style={{ color: "#94a3b8" }}>—</span>;
+  const positive = value >= 0;
   return (
-    <Box sx={{ pl: 1 }}>
-      <span style={{ color: "#334155", fontSize: 11 }}>{value}</span>
-      {data?.Asset_Class && (
-        <span style={{ color: "#94a3b8", marginLeft: 6, fontSize: 10 }}>{data.Asset_Class}</span>
-      )}
-    </Box>
+    <span style={{ color: positive ? "#22c55e" : "#ef4444", fontWeight: 500 }}>
+      {positive ? "" : "-"}{Math.abs(Math.round(value)).toLocaleString("en-GB")}
+    </span>
   );
 }
 
@@ -91,13 +108,13 @@ function buildAnalystCols(varMode) {
     {
       field: "Analyst", headerName: "Analyst",
       cellRenderer: AnalystNameRenderer,
-      flex: 2, minWidth: 120,
+      flex: 1, minWidth: 90,
       cellStyle: { display: "flex", alignItems: "center" },
     },
     {
       headerName: "VaR",
       children: [
-        { field: cur,  headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 80, type: "numericColumn", sort: "desc" },
+        { field: cur,  headerName: "Current", cellRenderer: VaRRenderer,   flex: 1, minWidth: 80, type: "numericColumn", sort: "desc" },
         { field: dSOD, headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 80, type: "numericColumn" },
         { field: dT1,  headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 80, type: "numericColumn" },
       ],
@@ -107,6 +124,14 @@ function buildAnalystCols(varMode) {
       children: [
         { field: "Margin",       headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 85, type: "numericColumn" },
         { field: "Delta_Margin", headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 80, type: "numericColumn" },
+      ],
+    },
+    {
+      headerName: "Gross P&L",
+      children: [
+        { field: "_pnl1d",  headerName: "1D",  cellRenderer: PnlRenderer, flex: 1, minWidth: 85, type: "numericColumn" },
+        { field: "_pnl5d",  headerName: "5D",  cellRenderer: PnlRenderer, flex: 1, minWidth: 85, type: "numericColumn" },
+        { field: "_pnlytd", headerName: "YTD", cellRenderer: PnlRenderer, flex: 1, minWidth: 90, type: "numericColumn" },
       ],
     },
   ];
@@ -132,10 +157,11 @@ function buildProductCols(onProductClick, selectedProduct) {
       cellStyle: { display: "flex", alignItems: "center" },
       onCellClicked: ({ data }) => onProductClick(data?.Product),
     },
-    { field: "iVaR",          headerName: "iVaR",  cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn", sort: "desc" },
-    { field: "Delta_iVaR",    headerName: "Δ SOD", cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
-    { field: "Delta_iVaR_t1", headerName: "Δ t-1", cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
-    { field: "Margin",        headerName: "Margin", cellRenderer: NumRenderer,  flex: 1, minWidth: 70, type: "numericColumn" },
+    { field: "iVaR",          headerName: "iVaR",   cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn", sort: "desc" },
+    { field: "Delta_iVaR",    headerName: "Δ SOD",  cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
+    { field: "Delta_iVaR_t1", headerName: "Δ t-1",  cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
+    { field: "Margin",        headerName: "Margin", cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn" },
+    { field: "_pnlytd",       headerName: "YTD P&L", cellRenderer: PnlRenderer,  flex: 1, minWidth: 85, type: "numericColumn" },
   ];
 }
 
@@ -227,7 +253,7 @@ function MiniChart({ data, dataKey, color, label, loading }) {
           <Typography sx={{ color: "#94a3b8", fontSize: 12 }}>No data.</Typography>
         </Box>
       ) : (
-        <Box sx={{ height: 130 }}>
+        <Box sx={{ height: 130, minWidth: 0 }}>
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
               <defs>
@@ -265,6 +291,7 @@ function AnalystDetail({ analyst, office, varMode }) {
   const [selectedProduct, setSelectedProduct]  = useState(null);
   const [productChart,    setProductChart]     = useState([]);
   const [prodChartLoad,   setProdChartLoad]    = useState(false);
+  const [productPnl,      setProductPnl]       = useState({});
 
   const confidence = varMode === "100D" ? 95.0 : 100.0;
   const lookback   = varMode === "100D" ? 100  : 10;
@@ -278,12 +305,33 @@ function AnalystDetail({ analyst, office, varMode }) {
       .catch(() => setChartLoading(false));
   }, [analyst, office, confidence, lookback, chartDays]);
 
-  // Product list
+  // Product list + YTD P&L (fetched in parallel)
   useEffect(() => {
     setProdLoading(true);
     setSelectedProduct(null);
-    getAnalystProducts(analyst, office, confidence, lookback)
-      .then(r => { setProducts(r.data?.data || []); setProdLoading(false); })
+    Promise.all([
+      getAnalystProducts(analyst, office, confidence, lookback),
+      getHawkAnalystProductPnl(analyst),
+    ])
+      .then(([varRes, pnlRes]) => {
+        const varRows = varRes.data?.data || [];
+        const pnlRows = pnlRes.data?.data || [];
+
+        // Build lookup: Product → PnL_YTD
+        const pnlMap = {};
+        for (const row of pnlRows) {
+          pnlMap[row.Product] = row.PnL_YTD;
+        }
+
+        // Merge YTD P&L into product rows
+        const merged = varRows.map(row => ({
+          ...row,
+          _pnlytd: pnlMap[row.Product] ?? null,
+        }));
+
+        setProducts(merged);
+        setProdLoading(false);
+      })
       .catch(() => setProdLoading(false));
   }, [analyst, office, confidence, lookback]);
 
@@ -308,7 +356,6 @@ function AnalystDetail({ analyst, office, varMode }) {
   // Which data drives the VaR chart
   const varChartData    = selectedProduct ? productChart : analystChart;
   const varChartLoading = selectedProduct ? prodChartLoad : chartLoading;
-  const varChartKey     = selectedProduct || "VaR";
   const varChartLabel   = selectedProduct ? `iVaR — ${selectedProduct}` : "VaR History";
 
   return (
@@ -427,8 +474,36 @@ export default function AnalystTab({ location, refreshKey }) {
 
   useEffect(() => {
     setLoading(true); setError(null); setSelected(null);
-    getAnalysts(location)
-      .then(r => { setData(r.data?.data || []); setLoading(false); })
+
+    Promise.all([
+      getAnalysts(location),
+      getHawkAnalystPnl(location),
+    ])
+      .then(([varRes, pnlRes]) => {
+        const varRows = varRes.data?.data || [];
+        const pnlRows = pnlRes.data?.data || [];
+
+        // Build lookup: Analyst → { PnL_1D, PnL_5D, PnL_YTD }
+        const pnlMap = {};
+        for (const row of pnlRows) {
+          pnlMap[row.Analyst] = {
+            _pnl1d:  row.PnL_1D,
+            _pnl5d:  row.PnL_5D,
+            _pnlytd: row.PnL_YTD,
+          };
+        }
+
+        // Merge P&L into VaR rows
+        const merged = varRows.map(row => ({
+          ...row,
+          _pnl1d:  pnlMap[row.Analyst]?._pnl1d  ?? null,
+          _pnl5d:  pnlMap[row.Analyst]?._pnl5d  ?? null,
+          _pnlytd: pnlMap[row.Analyst]?._pnlytd ?? null,
+        }));
+
+        setData(merged);
+        setLoading(false);
+      })
       .catch(e => { setError(e.message); setLoading(false); });
   }, [location, refreshKey]);
 
