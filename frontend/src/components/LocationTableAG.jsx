@@ -6,6 +6,9 @@
  * Level 2: Sector rows  — click to expand product rows
  * Level 3: Product rows with subgroup header rows (injected by backend,
  *           carrying Cumulus netted VaR values)
+ *
+ * P&L columns (1D, 5D) sourced from HAWK parquet cache via /api/hawk-office-pnl.
+ * Fetched in parallel with VaR data and merged client-side by Office name.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -20,7 +23,7 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getLocationTable, getAssetClassTableGrouped, getProductTableBySector } from "../api/client";
+import { getLocationTable, getAssetClassTableGrouped, getProductTableBySector, getHawkOfficePnl } from "../api/client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -65,6 +68,17 @@ function NumRenderer({ value, data }) {
   if (value === null || value === undefined)
     return <span style={{ color: "#94a3b8" }}>—</span>;
   return <span>{Math.round(Math.abs(value)).toLocaleString("en-GB")}</span>;
+}
+
+function PnlRenderer({ value }) {
+  if (value === null || value === undefined)
+    return <span style={{ color: "#94a3b8" }}>—</span>;
+  const positive = value >= 0;
+  return (
+    <span style={{ color: positive ? "#22c55e" : "#ef4444", fontWeight: 500 }}>
+      {positive ? "" : "-"}{Math.abs(Math.round(value)).toLocaleString("en-GB")}
+    </span>
+  );
 }
 
 function OfficeNameRenderer({ value }) {
@@ -113,11 +127,6 @@ function ProductNameRenderer({ value, data }) {
   );
 }
 
-function PlaceholderRenderer({ data }) {
-  if (data?._rowType === "subgroup") return null;
-  return <span style={{ color: "#cbd5e1", fontStyle: "italic", fontSize: 11 }}>—</span>;
-}
-
 // ─── Column builder ───────────────────────────────────────────────────────────
 
 function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort = true) {
@@ -144,13 +153,13 @@ function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort 
     {
       headerName: "1D P&L",
       children: [
-        { field: "_pnl1d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
+        { field: "_pnl1d", headerName: "Net P&L", cellRenderer: PnlRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: allowSort },
       ],
     },
     {
       headerName: "5D P&L",
       children: [
-        { field: "_pnl5d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
+        { field: "_pnl5d", headerName: "Cumulative", cellRenderer: PnlRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: allowSort },
       ],
     },
     {
@@ -244,14 +253,35 @@ export default function LocationTableAG({
   const [productState,   setProductState]   = useState({});
   const [varMode,        setVarMode]        = useState("100D");
 
-  // ── Load office data ──────────────────────────────────────────────────────
+  // ── Load office data + HAWK P&L in parallel ───────────────────────────────
   useEffect(() => {
     setLocLoading(true); setLocError(null);
     setSelectedOffice(null); setSectorData([]);
     setExpandedSector(null); setProductState({});
-    getLocationTable(location)
-      .then(r => {
-        setLocData((r.data.data || []).map(row => ({ ...row, name: row.Office })));
+
+    Promise.all([
+      getLocationTable(location),
+      getHawkOfficePnl(),
+    ])
+      .then(([locRes, hawkRes]) => {
+        const varRows = locRes.data.data  || [];
+        const pnlRows = hawkRes.data.data || [];
+
+        // Build a lookup of Office → { PnL_1D, PnL_5D }
+        const pnlMap = {};
+        for (const row of pnlRows) {
+          pnlMap[row.Office] = { _pnl1d: row.PnL_1D, _pnl5d: row.PnL_5D };
+        }
+
+        // Merge P&L into VaR rows by Office name
+        const merged = varRows.map(row => ({
+          ...row,
+          name:   row.Office,
+          _pnl1d: pnlMap[row.Office]?._pnl1d ?? null,
+          _pnl5d: pnlMap[row.Office]?._pnl5d ?? null,
+        }));
+
+        setLocData(merged);
         setLocLoading(false);
       })
       .catch(e => { setLocError(e.message); setLocLoading(false); });
@@ -289,8 +319,6 @@ export default function LocationTableAG({
     getProductTableBySector(sectorApiLoc, sector)
       .then(r => {
         const colour = SECTOR_COLOURS[sector] ?? "#94a3b8";
-        // Backend now injects subgroup header rows with _rowType = "subgroup"
-        // and product rows with _rowType = "product". Just map name field.
         const rows = (r.data.data || []).map(row => ({
           ...row,
           name: row.Product,

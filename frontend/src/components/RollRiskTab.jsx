@@ -1,14 +1,15 @@
 /**
  * RollRiskTab.jsx
- * Roll Risk tab — Fixed Income (Rates) and Equities product breakdown.
+ * Roll Risk tab — two views toggled at top:
  *
- * Each section has:
- *   - a section summary row (_rowType: "section")  — Cumulus netted total
- *   - subgroup header rows  (_rowType: "subgroup") — per currency/index group
- *   - product rows          (_rowType: "product")
+ *   RISK  — Fixed Income (currency subgroups) + Equities. Full rates breakdown
+ *           shows offsetting STIRs effect. Section total = Cumulus netted Rates/Equities.
  *
- * Clicking a product row opens VarMarginChart for that product below the section.
- * Clicking it again (or the reset link) closes the chart.
+ *   ROLLS — FI Rolls + Equity Rolls. Flat bond/equity list under each section.
+ *           Section total = Cumulus netted from FI Rolls / Equity Rolls asset class.
+ *           No subgroups. Product iVaRs are informational.
+ *
+ * Clicking a product row opens VarMarginChart inline below the section.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -23,17 +24,23 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getRollRisk } from "../api/client";
+import { getRollRisk, getRollRiskRolls } from "../api/client";
 import VarMarginChart from "./VarMarginChart";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Section colours ──────────────────────────────────────────────────────────
 
 const SECTION_COLOURS = {
+  // Risk view
   "Fixed Income": "#3b82f6",
   "Equities":     "#ec4899",
+  // Rolls view
+  "FI Rolls":     "#f59e0b",
+  "Equity Rolls": "#10b981",
 };
 
 const TOTAL_COLOUR = "#8b5cf6";
+
+// ─── Grid CSS vars ────────────────────────────────────────────────────────────
 
 const GRID_VARS = {
   "--ag-header-background-color":  "#f8fafc",
@@ -57,54 +64,37 @@ function fmtM(val) {
   if (val === null || val === undefined || isNaN(val)) return "—";
   return `$${(Math.abs(val) / 1_000_000).toFixed(1)}M`;
 }
-
 function fmtK(val) {
   if (val === null || val === undefined || isNaN(val)) return "—";
   return `$${Math.round(Math.abs(val) / 1000).toLocaleString("en-GB")}K`;
 }
-
 function fmtDeltaM(delta) {
   if (delta === null || delta === undefined || isNaN(delta)) return null;
   const up = delta >= 0;
-  return {
-    text: `${up ? "▲" : "▼"} $${Math.abs(delta / 1_000_000).toFixed(1)}M from SOD`,
-    up,
-  };
+  return { text: `${up ? "▲" : "▼"} $${Math.abs(delta / 1_000_000).toFixed(1)}M from SOD`, up };
 }
-
 function fmtDeltaK(delta) {
   if (delta === null || delta === undefined || isNaN(delta)) return null;
   const up = delta >= 0;
-  return {
-    text: `${up ? "▲" : "▼"} $${Math.abs(Math.round(delta / 1000)).toLocaleString("en-GB")}K from SOD`,
-    up,
-  };
+  return { text: `${up ? "▲" : "▼"} $${Math.abs(Math.round(delta / 1000)).toLocaleString("en-GB")}K from SOD`, up };
 }
 
-// ─── Derive top-bar metrics ───────────────────────────────────────────────────
-// Reads from _rowType === "section" for true Cumulus netted totals.
+// ─── Metrics helpers ──────────────────────────────────────────────────────────
 
 function deriveMetrics(sections) {
   const totals = { margin: 0, marginDelta: 0, var: 0, varDelta: 0 };
   const bySection = {};
-
   for (const sec of sections) {
-    const sectionRow     = sec.rows.find(r => r._rowType === "section");
-    const secVar         = sectionRow?.VaR_100D     ?? 0;
-    const secVarDelta    = sectionRow?.Delta_100D   ?? 0;
-    const secMargin      = sectionRow?.Margin       ?? 0;
-    const secMarginDelta = sectionRow?.Delta_Margin ?? 0;
-
+    const r = sec.rows.find(r => r._rowType === "section");
     bySection[sec.section] = {
-      margin: secMargin, marginDelta: secMarginDelta,
-      var: secVar,       varDelta: secVarDelta,
+      margin: r?.Margin ?? 0,       marginDelta: r?.Delta_Margin ?? 0,
+      var:    r?.VaR_100D ?? 0,     varDelta:    r?.Delta_100D   ?? 0,
     };
-    totals.margin      += secMargin;
-    totals.marginDelta += secMarginDelta;
-    totals.var         += secVar;
-    totals.varDelta    += secVarDelta;
+    totals.margin      += bySection[sec.section].margin;
+    totals.marginDelta += bySection[sec.section].marginDelta;
+    totals.var         += bySection[sec.section].var;
+    totals.varDelta    += bySection[sec.section].varDelta;
   }
-
   return { totals, bySection };
 }
 
@@ -112,49 +102,44 @@ function deriveMetrics(sections) {
 
 function RollMetricCard({ label, value, change, colour }) {
   return (
-    <Card elevation={0} sx={{
-      borderRadius: 2,
-      borderTop: `3px solid ${colour}`,
-      boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-      background: "#fff",
-    }}>
+    <Card elevation={0} sx={{ borderRadius: 2, borderTop: `3px solid ${colour}`, boxShadow: "0 1px 3px rgba(0,0,0,0.06)", background: "#fff" }}>
       <CardContent sx={{ p: "12px 14px !important" }}>
-        <Typography sx={{
-          fontSize: 10, fontWeight: 600, color: "#64748b",
-          textTransform: "uppercase", letterSpacing: "0.06em", mb: 0.5,
-        }}>
+        <Typography sx={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", mb: 0.5 }}>
           {label}
         </Typography>
         <Typography sx={{ fontSize: 20, fontWeight: 700, color: "#0f172a", mb: 0.25 }}>
           {value}
         </Typography>
-        {change ? (
-          <Typography sx={{ fontSize: 10, fontWeight: 500, color: change.up ? "#ef4444" : "#22c55e" }}>
-            {change.text}
-          </Typography>
-        ) : (
-          <Typography sx={{ fontSize: 10 }}>&nbsp;</Typography>
-        )}
+        {change
+          ? <Typography sx={{ fontSize: 10, fontWeight: 500, color: change.up ? "#ef4444" : "#22c55e" }}>{change.text}</Typography>
+          : <Typography sx={{ fontSize: 10 }}>&nbsp;</Typography>
+        }
       </CardContent>
     </Card>
   );
 }
 
-// ─── Metrics bar ─────────────────────────────────────────────────────────────
+// ─── Metrics bar (adapts labels to current view) ──────────────────────────────
 
-function RollMetricsBar({ sections }) {
+function RollMetricsBar({ sections, view }) {
   const { totals, bySection } = useMemo(() => deriveMetrics(sections), [sections]);
-  const fi = bySection["Fixed Income"] ?? {};
-  const eq = bySection["Equities"]     ?? {};
+
+  const isRolls = view === "rolls";
+  const s1key   = isRolls ? "FI Rolls"     : "Fixed Income";
+  const s2key   = isRolls ? "Equity Rolls" : "Equities";
+  const s1label = isRolls ? "FI Rolls"     : "FI";
+  const s2label = isRolls ? "Equity Rolls" : "Equity";
+  const s1 = bySection[s1key] ?? {};
+  const s2 = bySection[s2key] ?? {};
 
   return (
     <Box sx={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 1.5, mb: 2 }}>
-      <RollMetricCard label="Total Roll Margin"    value={fmtM(totals.margin)} change={fmtDeltaM(totals.marginDelta)} colour={TOTAL_COLOUR} />
-      <RollMetricCard label="FI Roll Margin"       value={fmtM(fi.margin)}     change={fmtDeltaM(fi.marginDelta)}     colour={SECTION_COLOURS["Fixed Income"]} />
-      <RollMetricCard label="Equity Roll Margin"   value={fmtM(eq.margin)}     change={fmtDeltaM(eq.marginDelta)}     colour={SECTION_COLOURS["Equities"]} />
-      <RollMetricCard label="Total Roll VaR 100D"  value={fmtK(totals.var)}    change={fmtDeltaK(totals.varDelta)}    colour={TOTAL_COLOUR} />
-      <RollMetricCard label="FI Roll VaR 100D"     value={fmtK(fi.var)}        change={fmtDeltaK(fi.varDelta)}        colour={SECTION_COLOURS["Fixed Income"]} />
-      <RollMetricCard label="Equity Roll VaR 100D" value={fmtK(eq.var)}        change={fmtDeltaK(eq.varDelta)}        colour={SECTION_COLOURS["Equities"]} />
+      <RollMetricCard label="Total Roll Margin"         value={fmtM(totals.margin)} change={fmtDeltaM(totals.marginDelta)} colour={TOTAL_COLOUR} />
+      <RollMetricCard label={`${s1label} Margin`}       value={fmtM(s1.margin)}     change={fmtDeltaM(s1.marginDelta)}     colour={SECTION_COLOURS[s1key]} />
+      <RollMetricCard label={`${s2label} Margin`}       value={fmtM(s2.margin)}     change={fmtDeltaM(s2.marginDelta)}     colour={SECTION_COLOURS[s2key]} />
+      <RollMetricCard label="Total Roll VaR 100D"       value={fmtK(totals.var)}    change={fmtDeltaK(totals.varDelta)}    colour={TOTAL_COLOUR} />
+      <RollMetricCard label={`${s1label} VaR 100D`}     value={fmtK(s1.var)}        change={fmtDeltaK(s1.varDelta)}        colour={SECTION_COLOURS[s1key]} />
+      <RollMetricCard label={`${s2label} VaR 100D`}     value={fmtK(s2.var)}        change={fmtDeltaK(s2.varDelta)}        colour={SECTION_COLOURS[s2key]} />
     </Box>
   );
 }
@@ -190,8 +175,7 @@ function NumRenderer({ value, data }) {
 }
 
 function ProductNameRenderer({ value, data }) {
-  const colour    = data?._sectionColour ?? "#94a3b8";
-  const isProduct = data?._rowType === "product";
+  const colour = data?._sectionColour ?? "#94a3b8";
 
   if (data?._rowType === "section") {
     return (
@@ -200,18 +184,13 @@ function ProductNameRenderer({ value, data }) {
       </span>
     );
   }
-
   if (data?._rowType === "subgroup") {
     return (
-      <span style={{
-        color: colour, fontWeight: 700, fontSize: 10,
-        letterSpacing: "0.06em", textTransform: "uppercase", paddingLeft: 8,
-      }}>
+      <span style={{ color: colour, fontWeight: 700, fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", paddingLeft: 8 }}>
         {value}
       </span>
     );
   }
-
   return (
     <Box sx={{ pl: 3, display: "flex", alignItems: "center", cursor: "pointer" }}>
       <span style={{ color: colour, marginRight: 6 }}>└</span>
@@ -228,44 +207,37 @@ function PlaceholderRenderer() {
   return <span style={{ color: "#cbd5e1", fontStyle: "italic", fontSize: 11 }}>—</span>;
 }
 
-// ─── Column builder ───────────────────────────────────────────────────────────
+// ─── Columns ──────────────────────────────────────────────────────────────────
 
 function buildColumns(varMode) {
   const varCurrent = varMode === "100D" ? "VaR_100D"      : "VaR_10D";
   const varDelta   = varMode === "100D" ? "Delta_100D"    : "Delta_10D";
   const varDeltaT1 = varMode === "100D" ? "Delta_100D_t1" : "Delta_10D_t1";
-
   return [
     {
-      field: "Product",
-      headerName: "Product",
-      cellRenderer: ProductNameRenderer,
+      field: "Product", headerName: "Product", cellRenderer: ProductNameRenderer,
       flex: 2, minWidth: 200, sortable: false,
       cellStyle: { display: "flex", alignItems: "center", justifyContent: "flex-start" },
     },
     {
-      headerName: "VAR",
-      children: [
+      headerName: "VAR", children: [
         { field: varCurrent,  headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
         { field: varDelta,    headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
         { field: varDeltaT1,  headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
       ],
     },
     {
-      headerName: "1D P&L",
-      children: [
+      headerName: "1D P&L", children: [
         { field: "_pnl1d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
       ],
     },
     {
-      headerName: "5D P&L",
-      children: [
+      headerName: "5D P&L", children: [
         { field: "_pnl5d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
       ],
     },
     {
-      headerName: "INIT. MARGIN",
-      children: [
+      headerName: "INIT. MARGIN", children: [
         { field: "Margin",          headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 100, type: "numericColumn", sortable: false },
         { field: "Delta_Margin",    headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: false },
         { field: "Delta_Margin_t1", headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: false },
@@ -275,12 +247,48 @@ function buildColumns(varMode) {
 }
 
 const DEFAULT_COL_DEF = {
-  resizable: true,
-  suppressMovable: true,
+  resizable: true, suppressMovable: true,
   cellStyle: { fontSize: 11, display: "flex", alignItems: "center", justifyContent: "flex-end" },
 };
 
-// ─── VarToggle ────────────────────────────────────────────────────────────────
+// ─── Row styling ──────────────────────────────────────────────────────────────
+
+function makeGetRowStyle(selectedProduct) {
+  return ({ data }) => {
+    const colour   = data?._sectionColour ?? "#94a3b8";
+    const selected = data?._rowType === "product" && data?.Product === selectedProduct;
+    if (data?._rowType === "section")  return { background: `${colour}1a`, borderLeft: `4px solid ${colour}`, borderBottom: `2px solid ${colour}50` };
+    if (data?._rowType === "subgroup") return { background: `${colour}0d`, borderLeft: `3px solid ${colour}`, borderBottom: `1px solid ${colour}30` };
+    if (selected)                      return { background: `${colour}20`, borderLeft: `3px solid ${colour}`, borderBottom: "1px solid #e9edf2", fontWeight: 700 };
+    return { borderLeft: `3px solid ${colour}40`, background: "#f8fafc", borderBottom: "1px solid #e9edf2" };
+  };
+}
+
+// ─── Toggles ─────────────────────────────────────────────────────────────────
+
+function ViewToggle({ view, setView }) {
+  return (
+    <ToggleButtonGroup
+      value={view} exclusive
+      onChange={(_, val) => { if (val) setView(val); }}
+      size="small"
+      sx={{
+        border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden",
+        "& .MuiToggleButton-root": {
+          fontSize: 11, fontWeight: 600, padding: "3px 14px",
+          border: "none", color: "#64748b", textTransform: "none",
+          "&.Mui-selected": {
+            background: "#0f172a", color: "#fff",
+            "&:hover": { background: "#1e293b" },
+          },
+        },
+      }}
+    >
+      <ToggleButton value="risk">Risk</ToggleButton>
+      <ToggleButton value="rolls">Rolls</ToggleButton>
+    </ToggleButtonGroup>
+  );
+}
 
 function VarToggle({ varMode, setVarMode }) {
   return (
@@ -308,52 +316,14 @@ function VarToggle({ varMode, setVarMode }) {
   );
 }
 
-// ─── Row styling ──────────────────────────────────────────────────────────────
-
-function makeGetRowStyle(selectedProduct) {
-  return ({ data }) => {
-    const colour    = data?._sectionColour ?? "#94a3b8";
-    const selected  = data?._rowType === "product" && data?.Product === selectedProduct;
-
-    if (data?._rowType === "section") {
-      return {
-        background:   `${colour}1a`,
-        borderLeft:   `4px solid ${colour}`,
-        borderBottom: `2px solid ${colour}50`,
-      };
-    }
-    if (data?._rowType === "subgroup") {
-      return {
-        background:   `${colour}0d`,
-        borderLeft:   `3px solid ${colour}`,
-        borderBottom: `1px solid ${colour}30`,
-      };
-    }
-    if (selected) {
-      return {
-        background:   `${colour}20`,
-        borderLeft:   `3px solid ${colour}`,
-        borderBottom: "1px solid #e9edf2",
-        fontWeight:   700,
-      };
-    }
-    return {
-      borderLeft:   `3px solid ${colour}40`,
-      background:   "#f8fafc",
-      borderBottom: "1px solid #e9edf2",
-    };
-  };
-}
-
 // ─── Section card ─────────────────────────────────────────────────────────────
 
-function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduct, location, refreshKey }) {
+function SectionCard({ sec, colDefs, selectedProduct, setSelectedProduct, location, refreshKey }) {
   const colour      = SECTION_COLOURS[sec.section] ?? "#94a3b8";
   const getRowStyle = useCallback(makeGetRowStyle(selectedProduct), [selectedProduct]);
 
   const onRowClicked = useCallback(({ data }) => {
     if (data?._rowType !== "product") return;
-    // Toggle: clicking the same product again closes the chart
     setSelectedProduct(prev =>
       prev?.product === data.Product && prev?.section === sec.section
         ? null
@@ -366,13 +336,9 @@ function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduc
   return (
     <Card elevation={0} sx={{ borderRadius: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
       <CardContent sx={{ p: "16px !important" }}>
-
-        {/* Section header */}
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
           <Box sx={{ width: 10, height: 10, borderRadius: "50%", background: colour, flexShrink: 0 }} />
-          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-            {sec.section}
-          </Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{sec.section}</Typography>
         </Box>
 
         {sec.rows.length === 0 ? (
@@ -395,7 +361,6 @@ function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduc
           </Box>
         )}
 
-        {/* Chart — shown when a product in this section is selected */}
         {isChartOpen && (
           <Box sx={{ mt: 2 }}>
             <VarMarginChart
@@ -407,7 +372,6 @@ function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduc
             />
           </Box>
         )}
-
       </CardContent>
     </Card>
   );
@@ -416,70 +380,84 @@ function SectionCard({ sec, colDefs, varMode, selectedProduct, setSelectedProduc
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function RollRiskTab({ location, refreshKey }) {
-  const [sections,         setSections]         = useState([]);
-  const [loading,          setLoading]          = useState(true);
-  const [error,            setError]            = useState(null);
-  const [varMode,          setVarMode]          = useState("100D");
-  // selectedProduct: { product: string, section: string } | null
-  const [selectedProduct,  setSelectedProduct]  = useState(null);
+  const [view,            setView]            = useState("risk");
+  const [riskSections,    setRiskSections]    = useState([]);
+  const [rollsSections,   setRollsSections]   = useState([]);
+  const [loadingRisk,     setLoadingRisk]     = useState(true);
+  const [loadingRolls,    setLoadingRolls]    = useState(true);
+  const [errorRisk,       setErrorRisk]       = useState(null);
+  const [errorRolls,      setErrorRolls]      = useState(null);
+  const [varMode,         setVarMode]         = useState("100D");
+  const [selectedProduct, setSelectedProduct] = useState(null);
 
+  const colourSections = (data, colourMap) =>
+    (data || []).map(sec => ({
+      ...sec,
+      rows: sec.rows.map(row => ({ ...row, _sectionColour: colourMap[sec.section] ?? "#94a3b8" })),
+    }));
+
+  // Fetch Risk view
   useEffect(() => {
-    setLoading(true); setError(null);
+    setLoadingRisk(true); setErrorRisk(null);
     getRollRisk(location)
-      .then(r => {
-        const coloured = (r.data.sections || []).map(sec => ({
-          ...sec,
-          rows: sec.rows.map(row => ({
-            ...row,
-            _sectionColour: SECTION_COLOURS[sec.section] ?? "#94a3b8",
-          })),
-        }));
-        setSections(coloured);
-        setLoading(false);
-      })
-      .catch(e => { setError(e.message); setLoading(false); });
+      .then(r => { setRiskSections(colourSections(r.data.sections, SECTION_COLOURS)); setLoadingRisk(false); })
+      .catch(e => { setErrorRisk(e.message); setLoadingRisk(false); });
   }, [location, refreshKey]);
 
-  // Reset selected product when location changes
-  useEffect(() => { setSelectedProduct(null); }, [location]);
+  // Fetch Rolls view
+  useEffect(() => {
+    setLoadingRolls(true); setErrorRolls(null);
+    getRollRiskRolls(location)
+      .then(r => { setRollsSections(colourSections(r.data.sections, SECTION_COLOURS)); setLoadingRolls(false); })
+      .catch(e => { setErrorRolls(e.message); setLoadingRolls(false); });
+  }, [location, refreshKey]);
 
-  const colDefs = useMemo(() => buildColumns(varMode), [varMode]);
+  // Reset on location or view change
+  useEffect(() => { setSelectedProduct(null); }, [location, view]);
 
-  if (loading) return <Box sx={{ p: 2.5, color: "#94a3b8", fontSize: 12 }}>Loading...</Box>;
-  if (error)   return <Box sx={{ p: 2, color: "#ef4444", fontSize: 12 }}>Error: {error}</Box>;
+  const sections = view === "risk" ? riskSections  : rollsSections;
+  const loading  = view === "risk" ? loadingRisk   : loadingRolls;
+  const error    = view === "risk" ? errorRisk     : errorRolls;
+  const colDefs  = useMemo(() => buildColumns(varMode), [varMode]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 0 }}>
 
       {/* ── Metrics bar ── */}
-      <RollMetricsBar sections={sections} />
+      {!loading && !error && <RollMetricsBar sections={sections} view={view} />}
 
-      {/* ── Header row ── */}
+      {/* ── Toolbar ── */}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5 }}>
-        <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>
-          Roll Risk
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>Roll Risk</Typography>
+          <ViewToggle view={view} setView={setView} />
+        </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
           <VarToggle varMode={varMode} setVarMode={setVarMode} />
           <Typography sx={{ fontSize: 11, color: "#94a3b8" }}>Values in USD</Typography>
         </Box>
       </Box>
 
-      {/* ── Section cards ── */}
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-        {sections.map(sec => (
-          <SectionCard
-            key={sec.section}
-            sec={sec}
-            colDefs={colDefs}
-            varMode={varMode}
-            selectedProduct={selectedProduct}
-            setSelectedProduct={setSelectedProduct}
-            location={location}
-            refreshKey={refreshKey}
-          />
-        ))}
-      </Box>
+      {/* ── Content ── */}
+      {loading ? (
+        <Box sx={{ p: 2.5, color: "#94a3b8", fontSize: 12 }}>Loading...</Box>
+      ) : error ? (
+        <Box sx={{ p: 2, color: "#ef4444", fontSize: 12 }}>Error: {error}</Box>
+      ) : (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+          {sections.map(sec => (
+            <SectionCard
+              key={sec.section}
+              sec={sec}
+              colDefs={colDefs}
+              selectedProduct={selectedProduct}
+              setSelectedProduct={setSelectedProduct}
+              location={location}
+              refreshKey={refreshKey}
+            />
+          ))}
+        </Box>
+      )}
 
     </Box>
   );

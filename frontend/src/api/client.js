@@ -18,9 +18,15 @@ export const clearCache                  = ()                                   
 
 // ── Roll Risk tab ─────────────────────────────────────────────────────────────
 export const getRollRisk                 = (location)                                      => api.get("/api/roll-risk",                 { params: { location } });
+export const getRollRiskRolls            = (location)                                      => api.get("/api/roll-risk-rolls",           { params: { location } });
+
 
 // ── Analyst tab ───────────────────────────────────────────────────────────────
 export const getAnalysts                 = (location)                                      => api.get("/api/analysts",                  { params: { location } });
 export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",             { params: { analyst, office, confidence, lookback, days } });
 export const getAnalystProducts          = (analyst, office, confidence, lookback)         => api.get("/api/analyst-products",          { params: { analyst, office, confidence, lookback } });
 export const getAnalystProductChart      = (analyst, office, product, confidence, lookback, days) => api.get("/api/analyst-product-chart", { params: { analyst, office, product, confidence, lookback, days } });
+
+
+// ── Hawk API  ─────────────────────────────────────────────────────────────────
+export const getHawkOfficePnl            = ()                                              => api.get("/api/hawk-office-pnl");

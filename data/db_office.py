@@ -340,38 +340,26 @@ def get_rolling_chart(location: str, confidence: float, lookback: int,
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
 
     if days == 1:
-        # Yesterday EOD (23:00) + today's intraday — anchored to EOD date, not rolling -24h
-        # This prevents prior-evening intraday runs (e.g. 22:00 yesterday) from bleeding in
+        # True rolling 24hr window — current time minus 24 hours
         query = """
                 SELECT
-                    CASE
-                        WHEN IsEOD = 1 THEN 'EOD'
-                        ELSE CONVERT(VARCHAR(5), Time, 108)
-                    END AS Date,
+                    CONVERT(VARCHAR(10), Date, 23) + ' ' + CONVERT(VARCHAR(5), Time, 108) AS Date,
                     VaR, Margin
                 FROM dbo.OfficeRisk
-                WHERE Confidence = ?
+                WHERE IsEOD      = 0
+                  AND Confidence = ?
                   AND Lookback   = ?
                   AND Office     = ?
-                  AND (
-                      -- Yesterday's EOD snapshot only
-                      (IsEOD = 1 AND Date = (
-                          SELECT TOP 1 Date FROM dbo.OfficeRisk
-                          WHERE IsEOD = 1 AND Confidence = ? AND Lookback = ? AND Office = ?
-                          ORDER BY Date DESC
-                      ))
-                      OR
-                      -- Today's intraday snapshots
-                      (IsEOD = 0 AND Date = CAST(GETDATE() AS DATE))
-                  )
+                  AND DATEADD(SECOND,
+                        DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
+                        CAST(CAST(Date AS DATE) AS DATETIME)
+                      ) >= DATEADD(HOUR, -25, GETDATE())
                 ORDER BY Date ASC, Time ASC
             """
         with get_connection() as conn:
             df = pd.read_sql(query, conn,
-                             params=[confidence, lookback, office_val,
-                                     confidence, lookback, office_val])
+                             params=[confidence, lookback, office_val])
         return df
-
 
     else:
 

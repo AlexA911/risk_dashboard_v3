@@ -12,6 +12,7 @@ import pandas as pd
 from data import db_office
 from data import db_analyst
 from data import db_rollview
+from data import db_hawk
 
 app = FastAPI(title="Risk Dashboard v3", version="3.0.0")
 
@@ -175,6 +176,20 @@ def location_table(location: str = "Total"):
     except Exception as e:
         raise HTTPException(500, str(e))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HAWK P&L — office level (from parquet cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/hawk-office-pnl")
+def hawk_office_pnl():
+    try:
+        key = "hawk-office-pnl"
+        df = get_cached(key, lambda: db_hawk.get_office_pnl())
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Analyst summary table (Summary tab drill-down — existing)
@@ -292,6 +307,57 @@ def analyst_products(
     except Exception as e:
         raise HTTPException(500, str(e))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Roll Risk
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/roll-risk")
+def roll_risk(location: str = "Total"):
+    try:
+        key = f"roll-risk:{location}"
+        sections = get_cached(key, lambda: db_rollview.get_roll_risk(location))
+        def sanitise(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            return v
+        clean_sections = [
+            {
+                "section": sec["section"],
+                "rows": [{k: sanitise(val) for k, val in row.items()} for row in sec["rows"]],
+            }
+            for sec in sections
+        ]
+        return {"sections": clean_sections}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/roll-risk-rolls")
+def roll_risk_rolls(location: str = "Total"):
+    try:
+        key = f"roll-risk-rolls:{location}"
+        sections = get_cached(key, lambda: db_rollview.get_roll_risk_rolls(location))
+        def sanitise(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            return v
+        clean_sections = [
+            {
+                "section": sec["section"],
+                "rows": [{k: sanitise(val) for k, val in row.items()} for row in sec["rows"]],
+            }
+            for sec in sections
+        ]
+        return {"sections": clean_sections}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/cache/clear")
+def clear_cache():
+    _cache.clear()
+    return {"cleared": True}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cache management
@@ -316,26 +382,6 @@ def analyst_product_chart(
         raise HTTPException(500, str(e))
 
 
-@app.get("/api/roll-risk")
-def roll_risk(location: str = "Total"):
-    try:
-        key = f"roll-risk:{location}"
-        sections = get_cached(key, lambda: db_rollview.get_roll_risk(location))
-        # Sanitise NaN/Inf values in nested dicts
-        def sanitise(v):
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                return None
-            return v
-        clean_sections = [
-            {
-                "section": sec["section"],
-                "rows": [{k: sanitise(val) for k, val in row.items()} for row in sec["rows"]],
-            }
-            for sec in sections
-        ]
-        return {"sections": clean_sections}
-    except Exception as e:
-        raise HTTPException(500, str(e))
 
 
 @app.post("/api/cache/clear")
