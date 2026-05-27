@@ -174,6 +174,8 @@ def location_table(location: str = "Total"):
         df = get_cached(key, lambda: db_office.get_location_table(location))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[LOCATION-TABLE ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,18 +261,18 @@ def product_table_by_sector(location: str = "Total", sector: str = "Energy"):
 # Analyst tab (db_analyst.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @app.get("/api/analysts")
 def analysts(location: str = "Total"):
-    """
-    Full analyst table for the Analyst tab — current VaR + SOD and t-1 deltas.
-    Filtered to the selected office, or all non-excluded offices when location='Total'.
-    """
     try:
         key = f"analysts:{location}"
         df = get_cached(key, lambda: db_analyst.get_analyst_table_for_tab(location))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ANALYSTS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
+
 
 
 @app.get("/api/analyst-chart")

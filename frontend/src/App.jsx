@@ -144,17 +144,17 @@ export default function App() {
 
       <div style={{ padding: "16px 20px" }}>
 
-        {/* ── Summary — full drill-down (previously Summary - New) ── */}
+        {/* ── Summary ── */}
         {activePage === "Summary" && (
           <>
             <MetricsRow location={location} refreshKey={refreshKey} />
-            {chart}
             <LocationTableAG
               location={location}
               refreshKey={refreshKey}
               onOfficeClick={handleOfficeClick}
               onSectorClick={handleSectorClick}
               onProductClick={handleProductClick}
+              chartSlot={chart}
             />
           </>
         )}

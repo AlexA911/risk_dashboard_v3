@@ -16,7 +16,7 @@ Two views:
 
 import pandas as pd
 from data.db_connection import get_connection
-from config import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
+from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
 
 # ─── Risk view sector definitions ─────────────────────────────────────────────
 

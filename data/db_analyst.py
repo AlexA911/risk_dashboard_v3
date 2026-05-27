@@ -15,7 +15,7 @@ Follows the same patterns as db_var.py:
 
 import pandas as pd
 from data.db_connection import get_connection
-from config import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
+from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
 
 
 # ─────────────────────────────────────────────────────────────────────────────

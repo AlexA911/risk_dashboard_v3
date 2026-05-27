@@ -153,7 +153,7 @@ function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort 
     {
       headerName: "1D P&L",
       children: [
-        { field: "_pnl1d", headerName: "Net P&L", cellRenderer: PnlRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: allowSort },
+        { field: "_pnl1d", headerName: "Gross P&L", cellRenderer: PnlRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: allowSort },
       ],
     },
     {
@@ -240,6 +240,7 @@ export default function LocationTableAG({
   location, refreshKey,
   onOfficeClick, onSectorClick, onProductClick,
   simple = false,
+  chartSlot = null,
 }) {
   const [locData,        setLocData]        = useState([]);
   const [locLoading,     setLocLoading]     = useState(true);
@@ -425,6 +426,9 @@ export default function LocationTableAG({
           </Box>
         </CardContent>
       </Card>
+
+      {/* ── Chart slot — rendered between Office grid and Sector Breakdown ── */}
+      {chartSlot && <Box>{chartSlot}</Box>}
 
       {/* ── Level 2: Sector grid ── */}
       {!simple && selectedOffice && (
