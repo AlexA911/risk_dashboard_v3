@@ -95,3 +95,45 @@ SQL (10-15 lines) and calls build_var_table() for the rest.
 
 **Note:** var_col defaults to "VaR" for office/analyst queries,
 set to "iVaR" for product-level queries.
+
+## 2026-05-28 — Stage 5: Rename Roll Risk functions and fix ViewToggle bug
+
+**Files changed:**
+- `data/db_rollview.py` — function definitions and docstring comments
+- `backend/main.py` — endpoint decorators, function names, cache keys, error labels
+- `frontend/src/api/client.js` — export names and API URL strings
+- `frontend/src/components/RollRiskTab.jsx` — import and 2 call sites
+
+**Renamed:**
+
+| Old | New |
+|---|---|
+| `get_roll_risk()` | `get_fi_group_risk()` |
+| `get_roll_risk_rolls()` | `get_fi_roll_risk()` |
+| `/api/roll-risk` | `/api/fi-group-risk` |
+| `/api/roll-risk-rolls` | `/api/fi-roll-risk` |
+| `getRollRisk` | `getFiGroupRisk` |
+| `getRollRiskRolls` | `getFiRollRisk` |
+
+**Reason:** The old names were ambiguous — "roll risk" could mean anything.
+The new names make the distinction explicit:
+- `get_fi_group_risk` — Fixed Income grouped by currency subgroup (USD, GBP,
+  EUR, CAD, AUD, CHF) plus Equities. Section total = Cumulus netted Rates /
+  Equity Indices. Shows the full offsetting STIRs effect.
+- `get_fi_roll_risk` — Fixed Income roll positions only (bond futures, no
+  STIRs) plus Equity Rolls. Section total = Cumulus netted from FI Rolls /
+  Equity Rolls asset class. Flat list, no subgroups.
+
+**Bug fixed:** `ViewToggle` in `RollRiskTab.jsx` had `value="Offset"` on the
+Risk button (should be `"risk"`) and `value="Rolls"` (capital R) where the
+view state check used lowercase `"rolls"`. Both corrected — Risk and Rolls
+tabs now show different data as intended.
+
+## 2026-05-28 — Stage 6: Normalise client.js
+
+**Reason:** `getVixMargin` and `getLastSnapshot` used raw `fetch` while
+every other export used axios. Inconsistent error handling and base URL
+management — if BASE_URL ever changes, raw fetch calls wouldn't pick it up.
+
+**Change:** Both converted to `api.get(...).then(r => r.data)` — same
+response shape for callers, consistent with the rest of the file.
