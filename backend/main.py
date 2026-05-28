@@ -388,6 +388,16 @@ def roll_risk_rolls(location: str = "Total"):
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/hawk-roll-pnl")
+def hawk_roll_pnl():
+    try:
+        df = db_hawk.get_roll_product_pnl("Total")
+        return {"data": df.replace({float("nan"): None}).to_dict(orient="records")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.post("/api/cache/clear")
 def clear_cache():
     _cache.clear()

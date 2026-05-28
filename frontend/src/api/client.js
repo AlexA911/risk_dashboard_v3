@@ -20,7 +20,6 @@ export const clearCache                  = ()                                   
 export const getRollRisk                 = (location)                                      => api.get("/api/roll-risk",                 { params: { location } });
 export const getRollRiskRolls            = (location)                                      => api.get("/api/roll-risk-rolls",           { params: { location } });
 
-
 // ── Analyst tab ───────────────────────────────────────────────────────────────
 export const getAnalysts                 = (location)                                      => api.get("/api/analysts",                  { params: { location } });
 export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",             { params: { analyst, office, confidence, lookback, days } });
@@ -29,5 +28,6 @@ export const getAnalystProductChart      = (analyst, office, product, confidence
 export const getHawkAnalystPnl           = (location)                                      => api.get("/api/hawk-analyst-pnl",         { params: { location } });
 export const getHawkAnalystProductPnl    = (analyst)                                       => api.get("/api/hawk-analyst-product-pnl",  { params: { analyst } });
 
-// ── Hawk API  ─────────────────────────────────────────────────────────────────
+// ── HAWK P&L ──────────────────────────────────────────────────────────────────
 export const getHawkOfficePnl            = ()                                              => api.get("/api/hawk-office-pnl");
+export const getHawkRollPnl              = ()                                              => api.get("/api/hawk-roll-pnl");

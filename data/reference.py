@@ -5,30 +5,29 @@ This file owns every static mapping and lookup used across the dashboard.
 When a new product appears, office is added, or data source arrives —
 this is the only file that needs updating.
 
-Imported by: db_office.py, db_hawk.py, and any future data modules.
-
 Sections:
   1.  Excluded offices
   2.  Office display order
   3.  Sector display order
-  4.  FF_Risk: Sector → Asset class mapping  (used by db_office.py)
-  5.  FF_Risk: Asset class → Sector mapping  (inverse lookup)
-  6.  FF_Risk: Subgroup netted asset classes (Cumulus netting group rows)
+  4.  FF_Risk: Sector → Asset class mapping
+  5.  FF_Risk: Asset class → Sector mapping (inverse)
+  6.  FF_Risk: Subgroup netted asset classes
   7.  FF_Risk: Subgroup display order per sector
   8.  FF_Risk: Product → Subgroup mapping
   9.  HAWK: AssetClass + SubAssetClass → Dashboard sector
   10. HAWK: Product-level sector overrides
-  11. HAWK: Parquet column names
-  11. Helper functions
+  11. HAWK: Parquet column names + helper functions
+  12. Roll Risk tab reference data
 """
 
 # ─── 1. Excluded offices ──────────────────────────────────────────────────────
-# Never shown in any dashboard view, across all data sources.
 
 EXCLUDED_OFFICES = [
-    "London P&C",  # wound down, no active traders
-    "Mumbai",  # excluded from VaR scope
-    "Montreal",  # excluded from dashboard views
+    "London P&C",    # wound down, no active traders
+    "Mumbai",        # excluded from VaR scope
+    "Montreal",      # excluded from dashboard views
+    "FI Rolls",      # Cumulus netting group pseudo-office
+    "Equity Rolls",  # Cumulus netting group pseudo-office
 ]
 
 FUTURES_FIRST_OFFICE = "Futures First"
@@ -59,7 +58,6 @@ SECTOR_ORDER = [
 
 
 # ─── 4. FF_Risk: Sector → Asset classes ──────────────────────────────────────
-# Used by db_office.py to filter ProductRisk rows by sector.
 
 SECTOR_ASSET_CLASSES = {
     "Energy":     ["Oils - Crude", "WTI", "NG", "Oils - Refined", "Oils"],
@@ -75,8 +73,6 @@ SECTOR_ASSET_CLASSES = {
 
 
 # ─── 5. FF_Risk: Asset class → Sector (inverse lookup) ───────────────────────
-# Used by db_hawk.py and any future module that needs to resolve FF_Risk
-# asset class names to dashboard sectors.
 
 SECTOR_MAP = {
     "Oils - Crude":       "Energy",
@@ -84,39 +80,30 @@ SECTOR_MAP = {
     "NG":                 "Energy",
     "Oils - Refined":     "Energy",
     "Oils":               "Energy",
-
     "USD Rates":          "Rates",
     "GBP Rates":          "Rates",
     "EUR Rates":          "Rates",
     "CAD Rates":          "Rates",
     "AUD Rates":          "Rates",
     "CHF Rates":          "Rates",
-
     "Equity Indices":     "Equities",
     "Volatility Indices": "Volatility",
     "FX":                 "FX",
-
     "Sugar":              "Softs",
     "Cocoa":              "Softs",
     "Coffee":             "Softs",
     "Cotton":             "Softs",
     "Softs":              "Softs",
-
     "Grains":             "Ags",
     "Live Stock":         "Ags",
     "Dairy":              "Ags",
-
     "Metal Base":         "Metals",
     "Metal Precious":     "Metals",
-
     "Crypto":             "Crypto",
 }
 
 
 # ─── 6. FF_Risk: Subgroup netted asset classes ────────────────────────────────
-# Maps subgroup header names to the FF_Risk asset classes whose Cumulus
-# netted VaR rows should be summed for that header.
-# Empty list = no Cumulus netting data available for this subgroup.
 
 SUBGROUP_NETTED_ASSET_CLASSES = {
     # Energy
@@ -145,7 +132,7 @@ SUBGROUP_NETTED_ASSET_CLASSES = {
     "Sugar":              ["Sugar"],
     "Cotton":             [],
     "OJ":                 [],
-    # Passthrough sectors (no subgroups — AC = subgroup)
+    # Passthrough sectors (no subgroups)
     "Equity Indices":     ["Equity Indices"],
     "Volatility Indices": ["Volatility Indices"],
     "FX":                 ["FX"],
@@ -165,7 +152,6 @@ SUBGROUP_ORDER = {
 
 
 # ─── 8. FF_Risk: Product → Subgroup mapping ───────────────────────────────────
-# Maps FF_Risk product names (from ProductRisk.Product) to subgroup headers.
 # Used by db_office.py to interleave subgroup header rows in the product table.
 
 PRODUCT_SUBGROUP = {
@@ -396,8 +382,6 @@ PRODUCT_SUBGROUP = {
 
 
 # ─── 9. HAWK: AssetClass + SubAssetClass → Dashboard sector ──────────────────
-# Maps (AssetClass, SubAssetClass) tuples from DailyProductTransactions.
-# None = exclude from sector P&L views.
 
 HAWK_SECTOR_MAP: dict[tuple[str, str], str | None] = {
     ("Energy",           "Energy"):           "Energy",
@@ -406,7 +390,7 @@ HAWK_SECTOR_MAP: dict[tuple[str, str], str | None] = {
     ("STIRs",            "Asian STIRs"):      "Rates",
     ("STIRs",            "Australian STIRs"): "Rates",
     ("STIRs",            "Brazilian DI"):     "Rates",
-    ("Indices & Stocks", "Indices & Stocks"): "Equities",  # overridden per product below
+    ("Indices & Stocks", "Indices & Stocks"): "Equities",
     ("Commodity",        "Softs"):            "Softs",
     ("Commodity",        "Grains & Oils"):    "Ags",
     ("Commodity",        "Livestock"):        "Ags",
@@ -414,7 +398,6 @@ HAWK_SECTOR_MAP: dict[tuple[str, str], str | None] = {
     ("Commodity",        "Metals"):           "Metals",
     ("Currency",         "Currency"):         "FX",
     ("Crypto",           "Crypto"):           "Crypto",
-    # Excluded
     ("Other Product",    "Other Product"):    None,
     ("Option Product",   "Option Product"):   None,
     ("Commodity",        "Other Product"):    None,
@@ -425,61 +408,155 @@ HAWK_SECTOR_MAP: dict[tuple[str, str], str | None] = {
 
 
 # ─── 10. HAWK: Product-level sector overrides ─────────────────────────────────
-# Products misclassified by HAWK at AssetClass/SubAssetClass level.
-# Takes priority over HAWK_SECTOR_MAP.
 
 HAWK_PRODUCT_SECTOR_OVERRIDES: dict[str, str | None] = {
-    "EFVS":  "Volatility",   # VSTOXX Futures — sits under Indices & Stocks in HAWK
-    "VIXXF": "Volatility",   # VIX Futures — sits under Indices & Stocks in HAWK
-    "DX":    "FX",           # US Dollar Index — sits under Indices & Stocks in HAWK
+    "EFVS":  "Volatility",   # VSTOXX Futures
+    "VIXXF": "Volatility",   # VIX Futures
+    "DX":    "FX",           # US Dollar Index
 }
 
 
-# ─── 11. Helper functions ─────────────────────────────────────────────────────
+# ─── 11. HAWK: Parquet column names + helper functions ───────────────────────
+
+HAWK_ANALYST_PNL_COL = "GrossPnL"
+HAWK_PRODUCT_PNL_COL = "PnL"
+
 
 def hawk_sector(asset_class: str, sub_asset_class: str, product: str) -> str | None:
-    """
-    Resolve a HAWK product to a dashboard sector.
-    Product override takes priority over AssetClass/SubAssetClass lookup.
-    Returns None if unclassified — exclude from sector views.
-    """
     if product in HAWK_PRODUCT_SECTOR_OVERRIDES:
         return HAWK_PRODUCT_SECTOR_OVERRIDES[product]
     return HAWK_SECTOR_MAP.get((asset_class, sub_asset_class), None)
 
 
 def ff_risk_sector(asset_class: str) -> str | None:
-    """Resolve an FF_Risk asset class to a dashboard sector."""
     return SECTOR_MAP.get(asset_class, None)
 
 
 def sort_offices(offices: list[str]) -> list[str]:
-    """Sort offices per OFFICE_DISPLAY_ORDER. Unknown offices go last alphabetically."""
     order = {name: i for i, name in enumerate(OFFICE_DISPLAY_ORDER)}
     return sorted(offices, key=lambda o: (order.get(o, len(OFFICE_DISPLAY_ORDER)), o))
 
 
 def sort_sectors(sectors: list[str]) -> list[str]:
-    """Sort sectors per SECTOR_ORDER. Unknown sectors go last alphabetically."""
     order = {name: i for i, name in enumerate(SECTOR_ORDER)}
     return sorted(sectors, key=lambda s: (order.get(s, len(SECTOR_ORDER)), s))
 
 
-# ─── 11. HAWK parquet column names ───────────────────────────────────────────
-# DailyAnalystTransactions and DailyProductTransactions use different column
-# names for the same concept. Use these constants throughout db_hawk.py rather
-# than hardcoding column names, so any upstream changes require only one edit.
-#
-# Known discrepancy vs HAWK frontend (as of 2026-05-26):
-#   - Daily firm total: LCY-SQL3 = 1,472,362 vs HAWK frontend = 1,473,483 (~1,121 gap)
-#   - MRN YTD: LCY-SQL3 = 4,803,381 vs HAWK frontend = 5,026,635 (~223k gap)
-#   - Rebate fields (VolumeRebates, ExchangeRebates) match exactly between sources
-#   - Root cause: LCY-SQL3 may be a replica of the primary AWS RDS instance
-#     (TM-DBINST1.CTMLJWOTKQUZ.EU-WEST-1.RDS.AMAZONAWS.COM) with incomplete sync
-#   - Raised with HAWK team for investigation
+# ─── 12. Roll Risk tab reference data ────────────────────────────────────────
+# All static data for db_rollview.py and db_hawk.py.
+# Equity Rolls reuses PRODUCT_SUBGROUP (section 8) — no separate list needed.
 
-# DailyAnalystTransactions — gross P&L field
-HAWK_ANALYST_PNL_COL = "GrossPnL"
+# Asset class → subgroup label for the Risk view.
+# Derived directly from Asset_Class — no per-product mapping required.
+ROLL_AC_TO_SUBGROUP = {
+    "USD Rates":      "USD",
+    "GBP Rates":      "GBP",
+    "EUR Rates":      "EUR",
+    "CAD Rates":      "CAD",
+    "AUD Rates":      "AUD",
+    "CHF Rates":      "CHF",
+    "Equity Indices": "Equity Indices",
+}
 
-# DailyProductTransactions — gross P&L field (different name to analyst table)
-HAWK_PRODUCT_PNL_COL = "PnL"
+# Risk view: Fixed Income (all Rates, incl. STIRs) + Equities
+ROLL_SECTORS = {
+    "Fixed Income": {
+        "asset_classes": [
+            "USD Rates", "GBP Rates", "EUR Rates",
+            "CAD Rates", "AUD Rates", "CHF Rates",
+        ],
+        "subgroups": ["USD", "GBP", "EUR", "CAD", "AUD", "CHF"],
+        "subgroup_asset_classes": {
+            "USD": ["USD Rates"],
+            "GBP": ["GBP Rates"],
+            "EUR": ["EUR Rates"],
+            "CAD": ["CAD Rates"],
+            "AUD": ["AUD Rates"],
+            "CHF": ["CHF Rates"],
+        },
+    },
+    "Equities": {
+        "asset_classes": ["Equity Indices"],
+        "subgroups": ["Equity Indices"],
+        "subgroup_asset_classes": {
+            "Equity Indices": ["Equity Indices"],
+        },
+    },
+}
+
+# FI roll products: bond futures only — STIRs and CHF (all STIRs) excluded.
+# Equity Rolls filter = all "Equity Indices" entries in PRODUCT_SUBGROUP above.
+ROLL_FI_PRODUCTS = {
+    # USD bonds
+    "US Ultra Bond", "US 30Yr T-Bond", "US 30Yr T-Bond(ZB)",
+    "US Ultra 10Yr T-Note", "US 10Yr T-Note", "US 5Yr T-Note", "US 2Yr T-Note",
+    "U.S. Treasury Bond", "U.S. 10 Year Treasury Bond", "U.S. 10-Year T-Note",
+    "U.S. 5-Year T-Note", "U.S. 2-Year T-Note", "U.S. 3 Year Treasury Bond",
+    # GBP bonds
+    "Gilt (Long)", "UK Long Gilt",
+    # EUR bonds
+    "Bund", "Bobl", "Schatz", "Buxl",
+    "Euro-Bund", "Euro-Bobl", "Euro-Schatz", "Euro-OAT",
+    "French 10Yr Oat", "Italian BTP", "Italian 2Yr BTP", "Long-Term Euro-BTP",
+    # CAD bonds
+    "CGB", "CGF", "CGZ",
+    # AUD bonds
+    "10Yr Aus Bond", "3Yr Aus Bill", "5Yr Aus Bond",
+}
+
+# Rolls view: FI Rolls (bonds only) and Equity Rolls (all equity index products).
+# Equity product filter derived from PRODUCT_SUBGROUP at module load — no duplication.
+ROLL_SECTORS_ROLLS = {
+    "FI Rolls": {
+        "sql_asset_class":       "FI Rolls",
+        "product_asset_classes": [
+            "USD Rates", "GBP Rates", "EUR Rates", "CAD Rates", "AUD Rates",
+        ],
+        "product_filter": ROLL_FI_PRODUCTS,
+    },
+    "Equity Rolls": {
+        "sql_asset_class":       "Equity Rolls",
+        "product_asset_classes": ["Equity Indices"],
+        "product_filter": {p for p, sg in PRODUCT_SUBGROUP.items() if sg == "Equity Indices"},
+    },
+}
+
+# HAWK exchange code → ProductRisk product name for Roll Risk P&L.
+# Bond codes only (no STIRs) + equity codes.
+# Multiple codes mapping to the same name are summed (e.g. TB + UBE).
+HAWK_ROLL_PRODUCT_MAP: dict[str, str] = {
+    # USD bonds
+    "CMETN":  "US Ultra 10Yr T-Note",
+    "FV":     "US 5Yr T-Note",
+    "TB":     "US Ultra Bond",
+    "TU":     "US 2Yr T-Note",
+    "TY":     "US 10Yr T-Note",
+    "UBE":    "US Ultra Bond",        # same row as TB — summed
+    # GBP bonds
+    "R":      "Gilt (Long)",
+    # EUR bonds
+    "FBTP":   "Italian BTP",
+    "FBTS":   "Italian 2Yr BTP",
+    "FGBL":   "Bund",
+    "FGBM":   "Bobl",
+    "FGBS":   "Schatz",
+    "FGBX":   "Buxl",                 # uncomment when Buxl positions go live
+    "FOAT":   "French 10Yr Oat",
+    # CAD bonds
+    "CGB":    "CGB",
+    "CGF":    "CGF",
+    "CGZ":    "CGZ",
+    # AUD bonds — SFEXT/SFEYT omitted (no ProductRisk rows)
+    # Equities
+    "CMEMES": "Micro E-Mini S&P 500 Futures",
+    "CMEMNQ": "Micro E-Mini Nasdaq 100",
+    "ES":     "e-Mini S&P 500",
+    "FDAX":   "Dax",
+    "FDXM":   "Mini-Dax",
+    "FESX":   "EuroStocks",
+    "FSMI":   "Swiss Market Index (SMI)",
+    "FXXP":   "STOXX Europe 600",
+    "NQ":     "e-Mini Nasdaq 100",
+    "YM":     "Mini Dow",
+    "Z":      "FTSE",
+}

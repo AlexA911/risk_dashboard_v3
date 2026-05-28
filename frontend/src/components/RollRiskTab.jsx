@@ -24,7 +24,7 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getRollRisk, getRollRiskRolls } from "../api/client";
+import { getRollRisk, getRollRiskRolls, getHawkRollPnl } from "../api/client";
 import VarMarginChart from "./VarMarginChart";
 
 // ─── Section colours ──────────────────────────────────────────────────────────
@@ -203,8 +203,15 @@ function ProductNameRenderer({ value, data }) {
   );
 }
 
-function PlaceholderRenderer() {
-  return <span style={{ color: "#cbd5e1", fontStyle: "italic", fontSize: 11 }}>—</span>;
+function PnLRenderer({ value, data }) {
+  if (value === null || value === undefined || data?._rowType === "section" || data?._rowType === "subgroup")
+    return <span style={{ color: "#94a3b8" }}>—</span>;
+  const pos = value >= 0;
+  return (
+    <span style={{ color: pos ? "#22c55e" : "#ef4444", fontWeight: 500, fontSize: 11 }}>
+      {pos ? "" : "-"}{Math.abs(Math.round(value)).toLocaleString("en-GB")}
+    </span>
+  );
 }
 
 // ─── Columns ──────────────────────────────────────────────────────────────────
@@ -221,19 +228,19 @@ function buildColumns(varMode) {
     },
     {
       headerName: "VAR", children: [
-        { field: varCurrent,  headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
-        { field: varDelta,    headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
-        { field: varDeltaT1,  headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: false },
+        { field: varCurrent,  headerName: "Current",  cellRenderer: NumRenderer,   flex: 1, minWidth: 90,  type: "numericColumn", sortable: false },
+        { field: varDelta,    headerName: "Δ SOD",    cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: false },
+        { field: varDeltaT1,  headerName: "Δ t-1",    cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: false },
       ],
     },
     {
       headerName: "1D P&L", children: [
-        { field: "_pnl1d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
+        { field: "_pnl1d", headerName: "Gross P&L",  cellRenderer: PnLRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: false },
       ],
     },
     {
       headerName: "5D P&L", children: [
-        { field: "_pnl5d", headerName: "coming soon", cellRenderer: PlaceholderRenderer, flex: 1, minWidth: 100, sortable: false },
+        { field: "_pnl5d", headerName: "Cumulative", cellRenderer: PnLRenderer, flex: 1, minWidth: 100, type: "numericColumn", sortable: false },
       ],
     },
     {
@@ -396,19 +403,47 @@ export default function RollRiskTab({ location, refreshKey }) {
       rows: sec.rows.map(row => ({ ...row, _sectionColour: colourMap[sec.section] ?? "#94a3b8" })),
     }));
 
-  // Fetch Risk view
+  // Helper: build pnlMap from hawk-roll-pnl response
+  const buildPnlMap = (pnlRows) => {
+    const map = {};
+    for (const r of pnlRows) map[r.Product] = { _pnl1d: r.PnL_1D, _pnl5d: r.PnL_5D };
+    return map;
+  };
+
+  // Helper: inject P&L into section rows by Product name
+  const mergePnl = (sections, pnlMap) =>
+    sections.map(sec => ({
+      ...sec,
+      rows: sec.rows.map(row => ({
+        ...row,
+        _pnl1d: row._rowType === "product" ? (pnlMap[row.Product]?._pnl1d ?? null) : null,
+        _pnl5d: row._rowType === "product" ? (pnlMap[row.Product]?._pnl5d ?? null) : null,
+      })),
+    }));
+
+  // Fetch Risk view + P&L in parallel
   useEffect(() => {
     setLoadingRisk(true); setErrorRisk(null);
-    getRollRisk(location)
-      .then(r => { setRiskSections(colourSections(r.data.sections, SECTION_COLOURS)); setLoadingRisk(false); })
+    Promise.all([getRollRisk(location), getHawkRollPnl()])
+      .then(([riskRes, pnlRes]) => {
+        const pnlMap   = buildPnlMap(pnlRes.data.data || []);
+        const sections = colourSections(riskRes.data.sections, SECTION_COLOURS);
+        setRiskSections(mergePnl(sections, pnlMap));
+        setLoadingRisk(false);
+      })
       .catch(e => { setErrorRisk(e.message); setLoadingRisk(false); });
   }, [location, refreshKey]);
 
-  // Fetch Rolls view
+  // Fetch Rolls view + P&L in parallel
   useEffect(() => {
     setLoadingRolls(true); setErrorRolls(null);
-    getRollRiskRolls(location)
-      .then(r => { setRollsSections(colourSections(r.data.sections, SECTION_COLOURS)); setLoadingRolls(false); })
+    Promise.all([getRollRiskRolls(location), getHawkRollPnl()])
+      .then(([rollsRes, pnlRes]) => {
+        const pnlMap   = buildPnlMap(pnlRes.data.data || []);
+        const sections = colourSections(rollsRes.data.sections, SECTION_COLOURS);
+        setRollsSections(mergePnl(sections, pnlMap));
+        setLoadingRolls(false);
+      })
       .catch(e => { setErrorRolls(e.message); setLoadingRolls(false); });
   }, [location, refreshKey]);
 

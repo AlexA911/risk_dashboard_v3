@@ -5,148 +5,24 @@ Two views:
 
   RISK VIEW  (get_roll_risk)
     Fixed Income | Equities — full product breakdown with currency subgroups.
+    Subgroup derived from Asset_Class directly — no separate product→subgroup map.
     Section total = Cumulus netted from Rates / Equity Indices asset classes.
 
   ROLLS VIEW  (get_roll_risk_rolls)
-    FI Rolls | Equity Rolls — flat product list, no subgroups.
-    Section total = Cumulus netted from Asset_Class IN ('FI Rolls','Equity Rolls').
-    Products = BOND_PRODUCTS for FI Rolls; all equities for Equity Rolls.
-    Product iVaRs are informational — pulled from Rates/Equities data.
+    FI Rolls | Equity Rolls — flat bond/equity product list, no STIRs, no subgroups.
+    Section total = Cumulus netted from Asset_Class = 'FI Rolls' / 'Equity Rolls'.
+
+All reference data lives in data/reference.py. This file contains only queries.
 """
 
 import pandas as pd
 from data.db_connection import get_connection
-from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
-
-# ─── Risk view sector definitions ─────────────────────────────────────────────
-
-ROLL_SECTORS = {
-    "Fixed Income": {
-        "asset_classes": [
-            "USD Rates", "GBP Rates", "EUR Rates",
-            "CAD Rates", "AUD Rates", "CHF Rates",
-        ],
-        "subgroups": ["USD", "GBP", "EUR", "CAD", "AUD", "CHF"],
-        "subgroup_asset_classes": {
-            "USD": ["USD Rates"],
-            "GBP": ["GBP Rates"],
-            "EUR": ["EUR Rates"],
-            "CAD": ["CAD Rates"],
-            "AUD": ["AUD Rates"],
-            "CHF": ["CHF Rates"],
-        },
-    },
-    "Equities": {
-        "asset_classes": ["Equity Indices"],
-        "subgroups": ["Equity Indices"],
-        "subgroup_asset_classes": {
-            "Equity Indices": ["Equity Indices"],
-        },
-    },
-}
-
-# ─── Product → subgroup mapping ───────────────────────────────────────────────
-
-PRODUCT_SUBGROUP = {
-    # USD
-    "1-Month SOFR":                    "USD", "30 Day Fed Fund":               "USD",
-    "3-Month SOFR":                    "USD", "SOFR":                          "USD",
-    "US 10Yr T-Note":                  "USD", "US 2Yr T-Note":                 "USD",
-    "US 30Yr T-Bond":                  "USD", "US 30Yr T-Bond(ZB)":            "USD",
-    "US 5Yr T-Note":                   "USD", "US Ultra 10Yr T-Note":          "USD",
-    "US Ultra Bond":                   "USD", "U.S. 10 Year Treasury Bond":    "USD",
-    "U.S. 10-Year T-Note":             "USD", "U.S. 2-Year T-Note":            "USD",
-    "U.S. 3 Year Treasury Bond":       "USD", "U.S. 30 Day Federal Funds":     "USD",
-    "U.S. 5-Year T-Note":              "USD", "U.S. Treasury Bond":            "USD",
-    # GBP
-    "Gilt (Long)":                     "GBP", "MPC Dated SONIA Futures":       "GBP",
-    "Three Month SONIA (CME)":         "GBP", "Three Month SONIA (ICE)":       "GBP",
-    "Three-Month Sonia Index":         "GBP", "UK Long Gilt":                  "GBP",
-    # EUR
-    "Bobl":                            "EUR", "Bund":                          "EUR",
-    "Buxl":                            "EUR", "Euribor":                       "EUR",
-    "Euro-Bobl":                       "EUR", "Euro-Bund":                     "EUR",
-    "Euro-OAT":                        "EUR", "Euro-Schatz":                   "EUR",
-    "French 10Yr Oat":                 "EUR", "Italian 2Yr BTP":               "EUR",
-    "Italian BTP":                     "EUR", "Long-Term Euro-BTP":            "EUR",
-    "Schatz":                          "EUR", "Three Month ESTR Indexed Future":"EUR",
-    "Three-Month Euribor":             "EUR",
-    # CAD
-    "CGB":                             "CAD", "CGF":                           "CAD",
-    "CGZ":                             "CAD", "One Month CORRA Futures":       "CAD",
-    "One-month CORRA":                 "CAD", "Three-month CORRA":             "CAD",
-    "Three-Month CORRA Futures":       "CAD",
-    # AUD
-    "10Yr Aus Bond":                   "AUD", "3Yr Aus Bill":                  "AUD",
-    "5Yr Aus Bond":                    "AUD", "90 Day Aus Bill":               "AUD",
-    # CHF
-    "Three Month SARON Index":         "CHF", "Three Month Saron Index Future":"CHF",
-    # Equities
-    "CAC40":                           "Equity Indices",
-    "Dax":                             "Equity Indices",
-    "E-Mini Russell 2000":             "Equity Indices",
-    "E-mini S&P Midcap 400":           "Equity Indices",
-    "EuroStocks":                      "Equity Indices",
-    "FTSE":                            "Equity Indices",
-    "Mini Dow":                        "Equity Indices",
-    "Mini-Dax":                        "Equity Indices",
-    "MSCI EAFE Index":                 "Equity Indices",
-    "MSCI Emerging Markets Index":     "Equity Indices",
-    "S&P/TSX 60 Index":                "Equity Indices",
-    "SPI 200 Index":                   "Equity Indices",
-    "STOXX Europe 600":                "Equity Indices",
-    "Swiss Market Index (SMI)":        "Equity Indices",
-    "e-Mini Nasdaq 100":               "Equity Indices",
-    "e-Mini S&P 500":                  "Equity Indices",
-    "Micro E-Mini S&P 500 Futures":    "Equity Indices",
-    "Micro E-Mini Nasdaq 100":         "Equity Indices",
-}
-
-# ─── Bond products for Rolls view ─────────────────────────────────────────────
-# STIRs excluded: SOFR, Fed Funds, SONIA, Euribor, ESTR, CORRA, SARON variants.
-# CHF excluded entirely (all CHF products are STIRs).
-
-BOND_PRODUCTS = {
-    # USD bonds
-    "US Ultra Bond", "US 30Yr T-Bond", "US 30Yr T-Bond(ZB)",
-    "US Ultra 10Yr T-Note", "US 10Yr T-Note", "US 5Yr T-Note", "US 2Yr T-Note",
-    "U.S. Treasury Bond", "U.S. 10 Year Treasury Bond", "U.S. 10-Year T-Note",
-    "U.S. 5-Year T-Note", "U.S. 2-Year T-Note", "U.S. 3 Year Treasury Bond",
-    # GBP bonds
-    "Gilt (Long)", "UK Long Gilt",
-    # EUR bonds
-    "Bund", "Bobl", "Schatz", "Buxl",
-    "Euro-Bund", "Euro-Bobl", "Euro-Schatz", "Euro-OAT",
-    "French 10Yr Oat", "Italian BTP", "Italian 2Yr BTP", "Long-Term Euro-BTP",
-    # CAD bonds
-    "CGB", "CGF", "CGZ",
-    # AUD bonds
-    "10Yr Aus Bond", "3Yr Aus Bill", "5Yr Aus Bond", "90 Day Aus Bill",
-}
-
-EQUITY_PRODUCTS = {
-    "CAC40", "Dax", "E-Mini Russell 2000", "E-mini S&P Midcap 400",
-    "EuroStocks", "FTSE", "Mini Dow", "Mini-Dax", "MSCI EAFE Index",
-    "MSCI Emerging Markets Index", "S&P/TSX 60 Index", "SPI 200 Index",
-    "STOXX Europe 600", "Swiss Market Index (SMI)", "e-Mini Nasdaq 100",
-    "e-Mini S&P 500", "Micro E-Mini S&P 500 Futures", "Micro E-Mini Nasdaq 100",
-}
-
-# Rolls view sector definitions
-ROLL_SECTORS_ROLLS = {
-    "FI Rolls": {
-        "sql_asset_class":     "FI Rolls",       # for section netted total
-        "product_asset_classes": [               # for underlying product rows
-            "USD Rates", "GBP Rates", "EUR Rates", "CAD Rates", "AUD Rates",
-        ],
-        "product_filter": BOND_PRODUCTS,
-    },
-    "Equity Rolls": {
-        "sql_asset_class":     "Equity Rolls",
-        "product_asset_classes": ["Equity Indices"],
-        "product_filter": EQUITY_PRODUCTS,
-    },
-}
+from data.reference import (
+    FUTURES_FIRST_OFFICE,
+    ROLL_SECTORS,
+    ROLL_SECTORS_ROLLS,
+    ROLL_AC_TO_SUBGROUP,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,7 +53,6 @@ def _d(a, b):
 
 
 def _fetch_products(office_val, asset_classes, confidence, lookback, date, eod):
-    """Fetch product-level iVaR + Margin for a given office and asset class list."""
     ac_ph = ",".join(["?"] * len(asset_classes))
     if eod:
         query = f"""
@@ -226,7 +101,6 @@ def _fetch_products(office_val, asset_classes, confidence, lookback, date, eod):
 
 
 def _fetch_subgroup_netted(office_val, asset_classes, confidence, lookback, date, eod):
-    """Fetch Cumulus netted iVaR + Margin for a list of asset classes (Risk view)."""
     if not asset_classes:
         return None, None
     ac_ph    = ",".join(["?"] * len(asset_classes))
@@ -290,10 +164,6 @@ def _fetch_subgroup_netted(office_val, asset_classes, confidence, lookback, date
 
 
 def _fetch_rolls_netted(office_val, sql_asset_class, confidence, lookback, date, eod):
-    """
-    Fetch Cumulus netted iVaR + Margin for FI Rolls / Equity Rolls directly
-    from the Asset_Class rows (Analyst = Office, Product = Asset_Class).
-    """
     is_total = (office_val == FUTURES_FIRST_OFFICE)
 
     if is_total:
@@ -358,7 +228,6 @@ def _fetch_rolls_netted(office_val, sql_asset_class, confidence, lookback, date,
 def _build_product_df(office_val, asset_classes,
                       last_night_95, t1_95, today,
                       last_night_100, t1_100):
-    """Fetch and merge product rows across all configs/dates."""
     sod_95  = _fetch_products(office_val, asset_classes, 95.0,  100, last_night_95,  eod=True)
     t1_95_  = _fetch_products(office_val, asset_classes, 95.0,  100, t1_95,          eod=True)
     cur_95  = _fetch_products(office_val, asset_classes, 95.0,  100, today,           eod=False)
@@ -413,8 +282,9 @@ def _make_product_row(row) -> dict:
         "Margin":          row["Margin"],
         "Delta_Margin":    row["Delta_Margin"],
         "Delta_Margin_t1": row["Delta_Margin_t1"],
-        "_pnl1d":          None,  # placeholder — HAWK API not yet wired
-        "_pnl5d":          None,  # placeholder — HAWK API not yet wired
+        # P&L merged client-side from /api/hawk-roll-pnl
+        "_pnl1d":          None,
+        "_pnl5d":          None,
     }
 
 
@@ -435,8 +305,10 @@ def _get_dates():
 
 def get_roll_risk(location: str = "Total") -> list[dict]:
     """
-    Risk view — Fixed Income and Equities with currency subgroups.
+    Risk view — Fixed Income (bond+STIR products) and Equities.
+    Subgroup derived from Asset_Class via ROLL_AC_TO_SUBGROUP.
     Section total = Cumulus netted from Rates / Equity Indices.
+    P&L is None here — merged client-side from /api/hawk-roll-pnl.
     """
     today, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -451,9 +323,9 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
         df = _build_product_df(office_val, asset_classes,
                                last_night_95, t1_95, today,
                                last_night_100, t1_100)
-        df["Subgroup"] = df["Product"].map(PRODUCT_SUBGROUP).fillna("Other")
+        # Derive subgroup from Asset_Class — no product→subgroup map needed
+        df["Subgroup"] = df["Asset_Class"].map(ROLL_AC_TO_SUBGROUP).fillna("Other")
 
-        # Section summary row
         sec100_cur, sec_mar_cur = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, today,          eod=False)
         sec100_sod, sec_mar_sod = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, last_night_95,  eod=True)
         sec100_t1,  sec_mar_t1  = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, t1_95,          eod=True)
@@ -476,8 +348,7 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
             "Margin":          sec_mar_cur,
             "Delta_Margin":    _d(sec_mar_cur, sec_mar_sod),
             "Delta_Margin_t1": _d(sec_mar_cur, sec_mar_t1),
-            "_pnl1d":          None,
-            "_pnl5d":          None,
+            "_pnl1d": None, "_pnl5d": None,
         }
 
         rows = [section_row]
@@ -506,8 +377,7 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
                 "Margin":          mar_cur,
                 "Delta_Margin":    _d(mar_cur, mar_sod),
                 "Delta_Margin_t1": _d(mar_cur, mar_t1),
-                "_pnl1d":          None,
-                "_pnl5d":          None,
+                "_pnl1d": None, "_pnl5d": None,
             })
 
             for _, row in df[df["Subgroup"] == sg].sort_values(
@@ -526,10 +396,9 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
 
 def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
     """
-    Rolls view — FI Rolls and Equity Rolls.
+    Rolls view — FI Rolls (bond futures only, no STIRs) and Equity Rolls.
     Section total = Cumulus netted from Asset_Class = 'FI Rolls' / 'Equity Rolls'.
-    Products = BOND_PRODUCTS for FI Rolls; EQUITY_PRODUCTS for Equity Rolls.
-    No subgroup layer — flat list sorted by VaR_100D desc.
+    P&L is None here — merged client-side from /api/hawk-roll-pnl.
     """
     today, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -537,11 +406,10 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
     result = []
 
     for section_name, cfg in ROLL_SECTORS_ROLLS.items():
-        sql_ac        = cfg["sql_asset_class"]
-        product_acs   = cfg["product_asset_classes"]
+        sql_ac         = cfg["sql_asset_class"]
+        product_acs    = cfg["product_asset_classes"]
         product_filter = cfg["product_filter"]
 
-        # ── Section netted total from FI Rolls / Equity Rolls rows ───────────
         sec100_cur, sec_mar_cur = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, today,          eod=False)
         sec100_sod, sec_mar_sod = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, last_night_95,  eod=True)
         sec100_t1,  sec_mar_t1  = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, t1_95,          eod=True)
@@ -564,11 +432,9 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
             "Margin":          sec_mar_cur,
             "Delta_Margin":    _d(sec_mar_cur, sec_mar_sod),
             "Delta_Margin_t1": _d(sec_mar_cur, sec_mar_t1),
-            "_pnl1d":          None,
-            "_pnl5d":          None,
+            "_pnl1d": None, "_pnl5d": None,
         }
 
-        # ── Underlying products filtered to bonds / equities ──────────────────
         df = _build_product_df(office_val, product_acs,
                                last_night_95, t1_95, today,
                                last_night_100, t1_100)

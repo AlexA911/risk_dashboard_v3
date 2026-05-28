@@ -341,3 +341,59 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     )
 
     return result[["Product", "PnL_YTD"]]
+
+
+# ── Roll Risk product P&L ─────────────────────────────────────────────────────
+
+def get_roll_product_pnl(location: str = "Total") -> pd.DataFrame:
+    """
+    Product-level P&L for the Roll Risk tab (Rates + Equities sectors).
+
+    Maps HAWK exchange codes → ProductRisk product names via
+    HAWK_ROLL_PRODUCT_MAP, then aggregates 1D and 5D P&L.
+    Multiple HAWK codes mapping to the same product name (e.g. TB + UBE →
+    'US Ultra Bond') are summed automatically by the groupby.
+
+    Returns:
+        Product  — ProductRisk product name (joins to db_rollview product rows)
+        PnL_1D   — GrossPnL for most recent trading day
+        PnL_5D   — cumulative GrossPnL over last 5 trading days
+    """
+    from data.reference import HAWK_ROLL_PRODUCT_MAP
+
+    df = _load_parquet(PRODUCT_DIR)
+    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+
+    if location != "Total":
+        df = df[df["Office"] == location]
+
+    df = df[df["Product"].isin(HAWK_ROLL_PRODUCT_MAP)]
+    if df.empty:
+        return pd.DataFrame(columns=["Product", "PnL_1D", "PnL_5D"])
+
+    df = df.copy()
+    df["Product"] = df["Product"].map(HAWK_ROLL_PRODUCT_MAP)
+
+    last_5 = _last_n_dates(df, 5)
+    last_1 = last_5[:1]
+
+    if not last_5:
+        return pd.DataFrame(columns=["Product", "PnL_1D", "PnL_5D"])
+
+    def _agg(date_filter: list) -> pd.DataFrame:
+        subset = df[df["ReportDate"].isin(date_filter)]
+        by_itm = (
+            subset
+            .groupby(["ReportDate", "PrimaryITM", "Office", "Product"], as_index=False)
+            .agg(PnL=(HAWK_PRODUCT_PNL_COL, "sum"))
+        )
+        return (
+            by_itm
+            .groupby("Product", as_index=False)
+            .agg(PnL=("PnL", "sum"))
+        )
+
+    pnl_1d = _agg(last_1).rename(columns={"PnL": "PnL_1D"})
+    pnl_5d = _agg(last_5).rename(columns={"PnL": "PnL_5D"})
+
+    return pnl_1d.merge(pnl_5d, on="Product", how="outer")

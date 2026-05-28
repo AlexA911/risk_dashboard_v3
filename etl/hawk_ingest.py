@@ -1,17 +1,30 @@
 """
-HAWK Ingest - Step 3
-Two modes:
-  --backfill   One-off historical pull from 2024-06-01 → today.
-               Writes a single history.parquet per table.
-               Run once manually. Do not run again.
+HAWK Ingest
+Three modes:
+  --backfill     One-off historical pull from 2024-06-01 → today.
+                 Writes a single history.parquet per table.
+                 Errors if history.parquet already exists.
 
-  --daily      Pulls yesterday's data only.
-               Writes a dated parquet file alongside history.parquet.
-               Scheduled to run at 5am every weekday.
+  --rebackfill   Re-pulls full history, overwriting history.parquet.
+                 Use when LCY-SQL3 corrections have been applied to
+                 historical data and the cache needs refreshing.
+
+  --daily        Pulls yesterday's data only.
+                 Writes a dated parquet file alongside history.parquet.
+                 Scheduled to run at 5am every weekday.
 
 Usage:
   python etl/hawk_ingest.py --backfill
+  python etl/hawk_ingest.py --rebackfill
   python etl/hawk_ingest.py --daily
+
+Notes:
+  - All queries use (NOLOCK) to match HAWK frontend figures.
+    HAWK frontend reads from parquets built from LCY-SQL3 using NOLOCK.
+  - Nullable columns are explicitly cast to float64 before writing parquet
+    to avoid pyarrow schema conflicts when all values are NULL on a given day.
+  - LCY-SQL3 is the primary/authoritative source. Corrections applied to
+    historical rows require --rebackfill to refresh the cache.
 
 Location: risk_dashboard_v3/etl/hawk_ingest.py
 """
@@ -24,34 +37,55 @@ from datetime import date, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SERVER     = "LCY-SQL3"
-DATABASE   = "OSTCRebates"
+SERVER         = "LCY-SQL3"
+DATABASE       = "OSTCRebates"
 BACKFILL_START = "2024-06-01"
 
 BASE_DIR     = Path(__file__).resolve().parent.parent / "data" / "hawk" / "raw"
 ANALYST_DIR  = BASE_DIR / "analyst"
 PRODUCT_DIR  = BASE_DIR / "product"
 
+# Columns that can be entirely NULL on some days — cast to float64 to avoid
+# pyarrow schema conflicts when concatenating parquet files
+ANALYST_NULLABLE_COLS = [
+    "Bonuses", "InactiveAccAdj", "CommissionFxDiff",
+    "VolumeRebates", "ExchangeRebates",
+]
+PRODUCT_NULLABLE_COLS = [
+    "InitialMargin", "SODPosition",
+    "VolumeRebates", "ExchangeRebates",
+]
+
 # ── Mode ──────────────────────────────────────────────────────────────────────
 
-if "--backfill" in sys.argv:
-    MODE       = "backfill"
-    START_DATE = BACKFILL_START
-    END_DATE   = date.today().strftime("%Y-%m-%d")
+if "--rebackfill" in sys.argv:
+    MODE        = "rebackfill"
+    START_DATE  = BACKFILL_START
+    END_DATE    = date.today().strftime("%Y-%m-%d")
     ANALYST_OUT = ANALYST_DIR / "history.parquet"
     PRODUCT_OUT = PRODUCT_DIR / "history.parquet"
+
+elif "--backfill" in sys.argv:
+    MODE        = "backfill"
+    START_DATE  = BACKFILL_START
+    END_DATE    = date.today().strftime("%Y-%m-%d")
+    ANALYST_OUT = ANALYST_DIR / "history.parquet"
+    PRODUCT_OUT = PRODUCT_DIR / "history.parquet"
+
 elif "--daily" in sys.argv:
-    MODE       = "daily"
-    YESTERDAY  = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    START_DATE = YESTERDAY
-    END_DATE   = YESTERDAY
+    MODE        = "daily"
+    YESTERDAY   = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    START_DATE  = YESTERDAY
+    END_DATE    = YESTERDAY
     ANALYST_OUT = ANALYST_DIR / f"{YESTERDAY}.parquet"
     PRODUCT_OUT = PRODUCT_DIR / f"{YESTERDAY}.parquet"
+
 else:
     print("ERROR: No mode specified.")
     print("Usage:")
-    print("  python etl/hawk_ingest.py --backfill   (one-off historical pull)")
-    print("  python etl/hawk_ingest.py --daily      (yesterday's data only)")
+    print("  python etl/hawk_ingest.py --backfill      (one-off historical pull)")
+    print("  python etl/hawk_ingest.py --rebackfill    (re-pull full history, overwrites)")
+    print("  python etl/hawk_ingest.py --daily         (yesterday's data only)")
     sys.exit(1)
 
 # ── Guards ────────────────────────────────────────────────────────────────────
@@ -59,7 +93,7 @@ else:
 if MODE == "backfill":
     if ANALYST_OUT.exists() or PRODUCT_OUT.exists():
         print("ERROR: history.parquet already exists.")
-        print("Backfill has already been run. Use --daily for incremental updates.")
+        print("Use --rebackfill to overwrite, or --daily for incremental updates.")
         sys.exit(1)
 
 if MODE == "daily":
@@ -68,10 +102,14 @@ if MODE == "daily":
         print("Daily ingest for this date has already run.")
         sys.exit(1)
 
-# ── Connection ─────────────────────────────────────────────────────────────────
+# rebackfill has no guard — intentionally overwrites
+
+# ── Connection ────────────────────────────────────────────────────────────────
 
 print(f"Mode:     {MODE.upper()}")
 print(f"Pulling:  {START_DATE} → {END_DATE}")
+if MODE == "rebackfill":
+    print("WARNING:  history.parquet will be overwritten.")
 print(f"Connecting to {SERVER}...")
 
 conn = pyodbc.connect(
@@ -115,20 +153,25 @@ SELECT
     ClosingAccount,
     HireDate,
     FirstHireDate
-FROM [HAWK].[DailyAnalystTransactions]
+FROM [HAWK].[DailyAnalystTransactions] (NOLOCK)
 WHERE ReportDate >= '{START_DATE}'
   AND ReportDate <= '{END_DATE}'
   AND ITM != 'ICHN'
 ORDER BY ReportDate, PrimaryITM, ITM
 """
 
-print(f"Pulling DailyAnalystTransactions...")
-
+print("Pulling DailyAnalystTransactions...")
 df_analyst = pd.read_sql(analyst_query, conn)
+
+# Cast nullable columns to float64 to avoid pyarrow schema conflicts
+for col in ANALYST_NULLABLE_COLS:
+    if col in df_analyst.columns:
+        df_analyst[col] = df_analyst[col].astype("float64")
 
 print(f"Rows pulled:       {len(df_analyst):,}")
 print(f"Date range:        {df_analyst['ReportDate'].min().date()} → {df_analyst['ReportDate'].max().date()}")
 print(f"Unique analysts:   {df_analyst['PrimaryITM'].nunique()}")
+print(f"GrossPnL total:    {df_analyst['GrossPnL'].sum():,.0f}")
 
 # ── Pull product transactions ─────────────────────────────────────────────────
 
@@ -168,7 +211,7 @@ SELECT
     NetPnL_WO_RF,
     VolumeRebates,
     ExchangeRebates
-FROM [HAWK].[DailyProductTransactions]
+FROM [HAWK].[DailyProductTransactions] (NOLOCK)
 WHERE ReportDate >= '{START_DATE}'
   AND ReportDate <= '{END_DATE}'
   AND ITM != 'ICHN'
@@ -176,8 +219,12 @@ ORDER BY ReportDate, PrimaryITM, ITM, Product
 """
 
 print(f"\nPulling DailyProductTransactions...")
-
 df_product = pd.read_sql(product_query, conn)
+
+# Cast nullable columns to float64
+for col in PRODUCT_NULLABLE_COLS:
+    if col in df_product.columns:
+        df_product[col] = df_product[col].astype("float64")
 
 print(f"Rows pulled:       {len(df_product):,}")
 print(f"Date range:        {df_product['ReportDate'].min().date()} → {df_product['ReportDate'].max().date()}")
