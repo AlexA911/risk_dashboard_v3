@@ -28,6 +28,7 @@ Output columns for location/analyst tables (frontend expects these names):
 
 import pandas as pd
 from data.dates import today, get_latest_eod_dates, date_context
+from data.query_helpers import build_var_table
 from data.db_connection import get_connection
 from data.reference import (
     EXCLUDED_OFFICES,
@@ -353,71 +354,39 @@ def get_rolling_chart(location: str, confidence: float, lookback: int,
         eod_days = days - 1
 
         eod_query = """
-
                 SELECT TOP (?)
-
                     CONVERT(VARCHAR(10), Date, 23) AS Date,
-
                     VaR, Margin,
-
                     CAST(CAST(Date AS DATE) AS DATETIME) AS SortDT
-
                 FROM dbo.OfficeRisk
-
                 WHERE IsEOD      = 1
-
                   AND Confidence = ?
-
                   AND Lookback   = ?
-
                   AND Office     = ?
-
                 ORDER BY Date DESC
-
             """
-
         intra_query = """
-
                 SELECT
-
                     CONVERT(VARCHAR(10), Date, 23) + ' ' + CONVERT(VARCHAR(5), Time, 108) AS Date,
-
                     VaR, Margin,
-
                     DATEADD(SECOND,
-
                         DATEDIFF(SECOND, '00:00:00', CAST(Time AS TIME)),
-
                         CAST(CAST(Date AS DATE) AS DATETIME)
-
                     ) AS SortDT
-
                 FROM dbo.OfficeRisk
-
                 WHERE IsEOD      = 0
-
                   AND Date       >= CAST(DATEADD(DAY, -(? - 1), CAST(GETDATE() AS DATE)) AS DATE)
-
                   AND Confidence = ?
-
                   AND Lookback   = ?
-
                   AND Office     = ?
-
             """
-
         with get_connection() as conn:
-
             eod_df = pd.read_sql(eod_query, conn,
-
                                  params=[eod_days, confidence, lookback, office_val])
-
             intra_df = pd.read_sql(intra_query, conn,
-
-                                   params=[days, confidence, lookback, office_val])
+                                 params=[days, confidence, lookback, office_val])
 
         df = pd.concat([eod_df, intra_df], ignore_index=True)
-
         df = df.sort_values("SortDT").drop(columns="SortDT").reset_index(drop=True)
 
         return df
@@ -678,83 +647,48 @@ def get_location_table(location: str = "Total") -> pd.DataFrame:
         where  = "Office = ?"
         params = [location]
 
-    def fetch_eod(confidence, lookback, date):
-        query = f"""
-            SELECT Office, VaR, Margin
-            FROM dbo.OfficeRisk
-            WHERE IsEOD      = 1
-              AND Date       = ?
-              AND Confidence = ?
-              AND Lookback   = ?
-              AND {where}
-        """
+    def fetch(confidence, lookback, date, eod: bool):
+        if eod:
+            query = f"""
+                SELECT Office, VaR, Margin
+                FROM dbo.OfficeRisk
+                WHERE IsEOD      = 1
+                  AND Date       = ?
+                  AND Confidence = ?
+                  AND Lookback   = ?
+                  AND {where}
+            """
+        else:
+            query = f"""
+                SELECT Office, VaR, Margin
+                FROM dbo.OfficeRisk r1
+                WHERE IsEOD      = 0
+                  AND Date       = ?
+                  AND Confidence = ?
+                  AND Lookback   = ?
+                  AND Time = (
+                      SELECT MAX(r2.Time)
+                      FROM dbo.OfficeRisk r2
+                      WHERE r2.Office     = r1.Office
+                        AND r2.Date       = r1.Date
+                        AND r2.Confidence = r1.Confidence
+                        AND r2.Lookback   = r1.Lookback
+                        AND r2.IsEOD      = 0
+                  )
+                  AND {where}
+            """
         with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[date, confidence, lookback] + params)
+            return pd.read_sql(query, conn,
+                               params=[date, confidence, lookback] + params)
 
-    def fetch_intraday(confidence, lookback):
-        query = f"""
-            SELECT Office, VaR, Margin
-            FROM dbo.OfficeRisk r1
-            WHERE IsEOD      = 0
-              AND Date       = ?
-              AND Confidence = ?
-              AND Lookback   = ?
-              AND Time = (
-                  SELECT MAX(r2.Time)
-                  FROM dbo.OfficeRisk r2
-                  WHERE r2.Office     = r1.Office
-                    AND r2.Date       = r1.Date
-                    AND r2.Confidence = r1.Confidence
-                    AND r2.Lookback   = r1.Lookback
-                    AND r2.IsEOD      = 0
-              )
-              AND {where}
-        """
-        with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[dc.today_str, confidence, lookback] + params)
-
-    sod_95  = fetch_eod(95.0,  100, dc.last_night_95)
-    t1_95_  = fetch_eod(95.0,  100, dc.t1_95)
-    sod_100 = fetch_eod(100.0,  10, dc.last_night_100)
-    t1_100_ = fetch_eod(100.0,  10, dc.t1_100)
-    cur_95  = fetch_intraday(95.0,  100)
-    cur_100 = fetch_intraday(100.0,  10)
-
-    if cur_95.empty:  cur_95  = sod_95.copy()
-    if cur_100.empty: cur_100 = sod_100.copy()
-
-    sod_95  = sod_95.rename(columns={"VaR": "_var100_sod", "Margin": "_margin_sod"})
-    t1_95_  = t1_95_.rename(columns={"VaR": "_var100_t1",  "Margin": "_margin_t1"})
-    cur_95  = cur_95.rename(columns={"VaR": "_var100_cur", "Margin": "_margin_cur"})
-    sod_100 = sod_100.rename(columns={"VaR": "_var10_sod", "Margin": "_m100_sod"})
-    t1_100_ = t1_100_.rename(columns={"VaR": "_var10_t1",  "Margin": "_m100_t1"})
-    cur_100 = cur_100.rename(columns={"VaR": "_var10_cur", "Margin": "_m100_cur"})
-
-    df = (
-        sod_95[["Office", "_var100_sod", "_margin_sod"]]
-        .merge(t1_95_ [["Office", "_var100_t1",  "_margin_t1"]],  on="Office", how="outer")
-        .merge(cur_95 [["Office", "_var100_cur", "_margin_cur"]], on="Office", how="outer")
-        .merge(sod_100[["Office", "_var10_sod"]],                 on="Office", how="outer")
-        .merge(t1_100_[["Office", "_var10_t1"]],                  on="Office", how="outer")
-        .merge(cur_100[["Office", "_var10_cur"]],                  on="Office", how="outer")
+    df = build_var_table(
+        fetch_fn   = fetch,
+        keys       = ["Office"],
+        dc         = dc,
+        var_col    = "VaR",
+        margin_col = "Margin",
     )
 
-    df["VaR_100D"]        = df["_var100_cur"]
-    df["Delta_100D"]      = df["_var100_cur"] - df["_var100_sod"]
-    df["Delta_100D_t1"]   = df["_var100_cur"] - df["_var100_t1"]
-    df["VaR_10D"]         = df["_var10_cur"]
-    df["Delta_10D"]       = df["_var10_cur"]  - df["_var10_sod"]
-    df["Delta_10D_t1"]    = df["_var10_cur"]  - df["_var10_t1"]
-    df["Margin"]          = df["_margin_cur"]
-    df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
-    df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
-
-    df = df[[
-        "Office",
-        "VaR_10D",  "Delta_10D",  "Delta_10D_t1",
-        "VaR_100D", "Delta_100D", "Delta_100D_t1",
-        "Margin",   "Delta_Margin", "Delta_Margin_t1",
-    ]]
     df = df.sort_values("VaR_100D", ascending=False).reset_index(drop=True)
 
     if location == "Total":
@@ -762,7 +696,6 @@ def get_location_table(location: str = "Total") -> pd.DataFrame:
         df = pd.concat([ff, df], ignore_index=True)
 
     return df
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Analyst table
@@ -779,77 +712,56 @@ def get_analyst_table(location: str = "Total") -> pd.DataFrame:
         where  = "Office = ?"
         params = [location]
 
-    def fetch_eod(confidence, lookback, date):
-        query = f"""
-            SELECT Office, Analyst, VaR, Margin
-            FROM dbo.AnalystRisk
-            WHERE IsEOD      = 1
-              AND Date       = ?
-              AND Confidence = ?
-              AND Lookback   = ?
-              AND {where}
-        """
+    def fetch(confidence, lookback, date, eod: bool):
+        if eod:
+            query = f"""
+                SELECT Office, Analyst, VaR, Margin
+                FROM dbo.AnalystRisk
+                WHERE IsEOD      = 1
+                  AND Date       = ?
+                  AND Confidence = ?
+                  AND Lookback   = ?
+                  AND {where}
+            """
+        else:
+            query = f"""
+                SELECT Office, Analyst, VaR, Margin
+                FROM dbo.AnalystRisk a1
+                WHERE IsEOD      = 0
+                  AND Date       = ?
+                  AND Confidence = ?
+                  AND Lookback   = ?
+                  AND Time = (
+                      SELECT MAX(a2.Time)
+                      FROM dbo.AnalystRisk a2
+                      WHERE a2.Office     = a1.Office
+                        AND a2.Analyst    = a1.Analyst
+                        AND a2.Date       = a1.Date
+                        AND a2.Confidence = a1.Confidence
+                        AND a2.Lookback   = a1.Lookback
+                        AND a2.IsEOD      = 0
+                  )
+                  AND {where}
+            """
         with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[date, confidence, lookback] + params)
-
-    def fetch_intraday(confidence, lookback):
-        query = f"""
-            SELECT Office, Analyst, VaR, Margin
-            FROM dbo.AnalystRisk a1
-            WHERE IsEOD      = 0
-              AND Date       = ?
-              AND Confidence = ?
-              AND Lookback   = ?
-              AND Time = (
-                  SELECT MAX(a2.Time)
-                  FROM dbo.AnalystRisk a2
-                  WHERE a2.Office     = a1.Office
-                    AND a2.Analyst    = a1.Analyst
-                    AND a2.Date       = a1.Date
-                    AND a2.Confidence = a1.Confidence
-                    AND a2.Lookback   = a1.Lookback
-                    AND a2.IsEOD      = 0
-              )
-              AND {where}
-        """
-        with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[dc.today_str, confidence, lookback] + params)
-
-    sod_95  = fetch_eod(95.0,  100, dc.last_night_95)
-    sod_100 = fetch_eod(100.0,  10, dc.last_night_100)
-    cur_95  = fetch_intraday(95.0,  100)
-    cur_100 = fetch_intraday(100.0,  10)
-
-    if cur_95.empty:  cur_95  = sod_95.copy()
-    if cur_100.empty: cur_100 = sod_100.copy()
+            return pd.read_sql(query, conn,
+                               params=[date, confidence, lookback] + params)
 
     keys = ["Office", "Analyst"]
-    sod_95  = sod_95.rename(columns={"VaR": "_var100_sod", "Margin": "_margin_sod"})
-    cur_95  = cur_95.rename(columns={"VaR": "_var100_cur", "Margin": "_margin_cur"})
-    sod_100 = sod_100.rename(columns={"VaR": "_var10_sod", "Margin": "_m100_sod"})
-    cur_100 = cur_100.rename(columns={"VaR": "_var10_cur", "Margin": "_m100_cur"})
 
-    df = (
-        sod_95[keys + ["_var100_sod", "_margin_sod"]]
-        .merge(cur_95 [keys + ["_var100_cur", "_margin_cur"]], on=keys, how="outer")
-        .merge(sod_100[keys + ["_var10_sod"]],                 on=keys, how="outer")
-        .merge(cur_100[keys + ["_var10_cur"]],                  on=keys, how="outer")
+    df = build_var_table(
+        fetch_fn   = fetch,
+        keys       = keys,
+        dc         = dc,
+        var_col    = "VaR",
+        margin_col = "Margin",
     )
-
-    df["VaR_100D"]     = df["_var100_cur"]
-    df["Delta_100D"]   = df["_var100_cur"] - df["_var100_sod"]
-    df["VaR_10D"]      = df["_var10_cur"]
-    df["Delta_10D"]    = df["_var10_cur"]  - df["_var10_sod"]
-    df["Margin"]       = df["_margin_cur"]
-    df["Delta_Margin"] = df["_margin_cur"] - df["_margin_sod"]
 
     return (
         df[keys + ["VaR_10D", "Delta_10D", "VaR_100D", "Delta_100D", "Margin", "Delta_Margin"]]
         .sort_values("VaR_100D", ascending=False)
         .reset_index(drop=True)
     )
-
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Asset class table — GROUPED by sector
@@ -862,14 +774,12 @@ def get_asset_class_table(location: str = "Total") -> pd.DataFrame:
 def get_product_table(location: str = "Total") -> pd.DataFrame:
     return pd.DataFrame()
 
-
 def get_asset_class_table_grouped(location: str = "Total") -> pd.DataFrame:
     _EMPTY = ["Sector", "VaR_10D", "Delta_10D", "Delta_10D_t1",
               "VaR_100D", "Delta_100D", "Delta_100D_t1",
               "Margin", "Delta_Margin", "Delta_Margin_t1"]
 
-    dc = date_context()
-
+    dc         = date_context()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
 
     def fetch(confidence, lookback, date, eod: bool):
@@ -912,70 +822,26 @@ def get_asset_class_table_grouped(location: str = "Total") -> pd.DataFrame:
             return pd.read_sql(query, conn,
                                params=[date, confidence, lookback, office_val])
 
-    sod_95  = fetch(95.0,  100, dc.last_night_95,   eod=True)
-    t1_95_  = fetch(95.0,  100, dc.t1_95,           eod=True)
-    cur_95  = fetch(95.0,  100, dc.today_str,       eod=False)
-    sod_100 = fetch(100.0,  10, dc.last_night_100,  eod=True)
-    t1_100_ = fetch(100.0,  10, dc.t1_100,          eod=True)
-    cur_100 = fetch(100.0,  10, dc.today_str,       eod=False)
-
-    if sod_95.empty and cur_95.empty:
-        return pd.DataFrame(columns=_EMPTY)
-
-    if cur_95.empty:  cur_95  = sod_95.copy()
-    if cur_100.empty: cur_100 = sod_100.copy()
-
-    def apply_sector(df):
-        df = df.copy()
+    # Apply sector mapping then group by Sector before passing to build_var_table
+    def fetch_by_sector(confidence, lookback, date, eod):
+        df = fetch(confidence, lookback, date, eod)
+        if df.empty:
+            return pd.DataFrame(columns=["Sector", "iVaR", "Margin"])
         df["Sector"] = df["Asset_Class"].map(SECTOR_MAP).fillna("Other")
-        return df
+        return df.groupby("Sector", as_index=False).agg({"iVaR": "sum", "Margin": "sum"})
 
-    sod_95  = apply_sector(sod_95)
-    t1_95_  = apply_sector(t1_95_)
-    cur_95  = apply_sector(cur_95)
-    sod_100 = apply_sector(sod_100)
-    t1_100_ = apply_sector(t1_100_)
-    cur_100 = apply_sector(cur_100)
-
-    sod_95  = sod_95.groupby("Sector",  as_index=False).agg({"iVaR": "sum", "Margin": "sum"})
-    t1_95_  = t1_95_.groupby("Sector",  as_index=False).agg({"iVaR": "sum", "Margin": "sum"})
-    cur_95  = cur_95.groupby("Sector",  as_index=False).agg({"iVaR": "sum", "Margin": "sum"})
-    sod_100 = sod_100.groupby("Sector", as_index=False).agg({"iVaR": "sum"})
-    t1_100_ = t1_100_.groupby("Sector", as_index=False).agg({"iVaR": "sum"})
-    cur_100 = cur_100.groupby("Sector", as_index=False).agg({"iVaR": "sum"})
-
-    key = "Sector"
-    sod_95  = sod_95.rename(columns={"iVaR": "_var100_sod",  "Margin": "_margin_sod"})
-    t1_95_  = t1_95_.rename(columns={"iVaR": "_var100_t1",   "Margin": "_margin_t1"})
-    cur_95  = cur_95.rename(columns={"iVaR": "_var100_cur",  "Margin": "_margin_cur"})
-    sod_100 = sod_100.rename(columns={"iVaR": "_var10_sod"})
-    t1_100_ = t1_100_.rename(columns={"iVaR": "_var10_t1"})
-    cur_100 = cur_100.rename(columns={"iVaR": "_var10_cur"})
-
-    df = (
-        sod_95[[key, "_var100_sod", "_margin_sod"]]
-        .merge(t1_95_ [[key, "_var100_t1",  "_margin_t1"]],  on=key, how="outer")
-        .merge(cur_95 [[key, "_var100_cur", "_margin_cur"]], on=key, how="outer")
-        .merge(sod_100[[key, "_var10_sod"]],                 on=key, how="outer")
-        .merge(t1_100_[[key, "_var10_t1"]],                  on=key, how="outer")
-        .merge(cur_100[[key, "_var10_cur"]],                  on=key, how="outer")
+    result = build_var_table(
+        fetch_fn   = fetch_by_sector,
+        keys       = ["Sector"],
+        dc         = dc,
+        var_col    = "iVaR",
+        margin_col = "Margin",
     )
 
-    df["VaR_100D"]        = df["_var100_cur"].abs()
-    df["Delta_100D"]      = df["_var100_cur"] - df["_var100_sod"]
-    df["Delta_100D_t1"]   = df["_var100_cur"] - df["_var100_t1"]
-    df["VaR_10D"]         = df["_var10_cur"].abs()
-    df["Delta_10D"]       = df["_var10_cur"]  - df["_var10_sod"]
-    df["Delta_10D_t1"]    = df["_var10_cur"]  - df["_var10_t1"]
-    df["Margin"]          = df["_margin_cur"]
-    df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
-    df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
+    if result.empty:
+        return pd.DataFrame(columns=_EMPTY)
 
-    df = df[[key, "VaR_10D", "Delta_10D", "Delta_10D_t1",
-             "VaR_100D", "Delta_100D", "Delta_100D_t1",
-             "Margin", "Delta_Margin", "Delta_Margin_t1"]]
-
-    return df.sort_values("VaR_100D", ascending=False).reset_index(drop=True)
+    return result.sort_values("VaR_100D", ascending=False).reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1001,10 +867,9 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
     if not asset_classes:
         return pd.DataFrame(columns=_EMPTY + ["_rowType"])
 
-    dc = date_context()
-
+    dc         = date_context()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
-    ac_ph = ",".join(["?"] * len(asset_classes))
+    ac_ph      = ",".join(["?"] * len(asset_classes))
 
     def fetch(confidence, lookback, date, eod: bool):
         if eod:
@@ -1052,46 +917,19 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
             return pd.read_sql(query, conn,
                                params=[date, confidence, lookback, office_val] + asset_classes)
 
-    sod_95  = fetch(95.0,  100, dc.last_night_95,  eod=True)
-    t1_95_  = fetch(95.0,  100, dc.t1_95,          eod=True)
-    cur_95  = fetch(95.0,  100, dc.today_str,           eod=False)
-    sod_100 = fetch(100.0,  10, dc.last_night_100,  eod=True)
-    t1_100_ = fetch(100.0,  10, dc.t1_100,          eod=True)
-    cur_100 = fetch(100.0,  10, dc.today_str,            eod=False)
-
-    if sod_95.empty and cur_95.empty:
-        return pd.DataFrame(columns=_EMPTY + ["_rowType"])
-
-    if cur_95.empty:  cur_95  = sod_95.copy()
-    if cur_100.empty: cur_100 = sod_100.copy()
-
-    keys = ["Product", "Asset_Class"]
-    sod_95  = sod_95.rename(columns={"iVaR": "_var100_sod",  "Margin": "_margin_sod"})
-    t1_95_  = t1_95_.rename(columns={"iVaR": "_var100_t1",   "Margin": "_margin_t1"})
-    cur_95  = cur_95.rename(columns={"iVaR": "_var100_cur",  "Margin": "_margin_cur"})
-    sod_100 = sod_100.rename(columns={"iVaR": "_var10_sod"})
-    t1_100_ = t1_100_.rename(columns={"iVaR": "_var10_t1"})
-    cur_100 = cur_100.rename(columns={"iVaR": "_var10_cur"})
-
-    df = (
-        sod_95[keys + ["_var100_sod", "_margin_sod"]]
-        .merge(t1_95_ [keys + ["_var100_t1",  "_margin_t1"]],  on=keys, how="outer")
-        .merge(cur_95 [keys + ["_var100_cur", "_margin_cur"]], on=keys, how="outer")
-        .merge(sod_100[keys + ["_var10_sod"]],                 on=keys, how="outer")
-        .merge(t1_100_[keys + ["_var10_t1"]],                  on=keys, how="outer")
-        .merge(cur_100[keys + ["_var10_cur"]],                  on=keys, how="outer")
+    # ── Build the base product table ──────────────────────────────────────────
+    df = build_var_table(
+        fetch_fn   = fetch,
+        keys       = ["Product", "Asset_Class"],
+        dc         = dc,
+        var_col    = "iVaR",
+        margin_col = "Margin",
     )
 
-    df["VaR_100D"]        = df["_var100_cur"].abs()
-    df["Delta_100D"]      = df["_var100_cur"] - df["_var100_sod"]
-    df["Delta_100D_t1"]   = df["_var100_cur"] - df["_var100_t1"]
-    df["VaR_10D"]         = df["_var10_cur"].abs()
-    df["Delta_10D"]       = df["_var10_cur"]  - df["_var10_sod"]
-    df["Delta_10D_t1"]    = df["_var10_cur"]  - df["_var10_t1"]
-    df["Margin"]          = df["_margin_cur"]
-    df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
-    df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
+    if df.empty:
+        return pd.DataFrame(columns=_EMPTY + ["_rowType"])
 
+    # ── Subgroup ordering ─────────────────────────────────────────────────────
     df["Subgroup"] = df["Product"].map(PRODUCT_SUBGROUP).fillna("Other")
 
     subgroup_order = SUBGROUP_ORDER.get(sector, [])
@@ -1102,11 +940,10 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
     df = df.drop(columns="_sg_order").reset_index(drop=True)
     df["_rowType"] = "product"
 
-    # Fetch Cumulus netted VaR for subgroup headers
+    # ── Interleave Cumulus netted subgroup header rows ────────────────────────
     all_subgroups = subgroup_order if subgroup_order else list(df["Subgroup"].unique())
     netted = _get_subgroup_netted_var(office_val, all_subgroups, sector)
 
-    # Interleave subgroup header rows with product rows
     result_rows = []
     for sg in all_subgroups:
         hdr = netted[netted["Subgroup"] == sg]

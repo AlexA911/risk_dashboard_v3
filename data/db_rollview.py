@@ -17,6 +17,7 @@ All reference data lives in data/reference.py. This file contains only queries.
 
 import pandas as pd
 from data.dates import today, get_latest_eod_dates, date_context
+from data.query_helpers import build_var_table
 from data.db_connection import get_connection
 from data.reference import (
     FUTURES_FIRST_OFFICE,
@@ -209,48 +210,6 @@ def _fetch_rolls_netted(office_val, sql_asset_class, confidence, lookback, date,
     return float(df["iVaR"].iloc[0]), float(df["Margin"].iloc[0])
 
 
-def _build_product_df(office_val, asset_classes,
-                      last_night_95, t1_95, today_str,
-                      last_night_100, t1_100):
-    sod_95  = _fetch_products(office_val, asset_classes, 95.0,  100, last_night_95,  eod=True)
-    t1_95_  = _fetch_products(office_val, asset_classes, 95.0,  100, t1_95,          eod=True)
-    cur_95  = _fetch_products(office_val, asset_classes, 95.0,  100, today_str,           eod=False)
-    sod_100 = _fetch_products(office_val, asset_classes, 100.0,  10, last_night_100,  eod=True)
-    t1_100_ = _fetch_products(office_val, asset_classes, 100.0,  10, t1_100,          eod=True)
-    cur_100 = _fetch_products(office_val, asset_classes, 100.0,  10, today_str,            eod=False)
-
-    if cur_95.empty:  cur_95  = sod_95.copy()
-    if cur_100.empty: cur_100 = sod_100.copy()
-
-    keys    = ["Product", "Asset_Class"]
-    sod_95  = sod_95.rename(columns={"iVaR": "_var100_sod",  "Margin": "_margin_sod"})
-    t1_95_  = t1_95_.rename(columns={"iVaR": "_var100_t1",   "Margin": "_margin_t1"})
-    cur_95  = cur_95.rename(columns={"iVaR": "_var100_cur",  "Margin": "_margin_cur"})
-    sod_100 = sod_100.rename(columns={"iVaR": "_var10_sod"})
-    t1_100_ = t1_100_.rename(columns={"iVaR": "_var10_t1"})
-    cur_100 = cur_100.rename(columns={"iVaR": "_var10_cur"})
-
-    df = (
-        sod_95 [keys + ["_var100_sod", "_margin_sod"]]
-        .merge(t1_95_ [keys + ["_var100_t1",  "_margin_t1"]],  on=keys, how="outer")
-        .merge(cur_95 [keys + ["_var100_cur", "_margin_cur"]], on=keys, how="outer")
-        .merge(sod_100[keys + ["_var10_sod"]],                 on=keys, how="outer")
-        .merge(t1_100_[keys + ["_var10_t1"]],                  on=keys, how="outer")
-        .merge(cur_100[keys + ["_var10_cur"]],                  on=keys, how="outer")
-    )
-
-    df["VaR_100D"]        = df["_var100_cur"].abs()
-    df["Delta_100D"]      = df["_var100_cur"] - df["_var100_sod"]
-    df["Delta_100D_t1"]   = df["_var100_cur"] - df["_var100_t1"]
-    df["VaR_10D"]         = df["_var10_cur"].abs()
-    df["Delta_10D"]       = df["_var10_cur"]  - df["_var10_sod"]
-    df["Delta_10D_t1"]    = df["_var10_cur"]  - df["_var10_t1"]
-    df["Margin"]          = df["_margin_cur"]
-    df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
-    df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
-
-    return df
-
 
 def _make_product_row(row) -> dict:
     return {
@@ -295,9 +254,17 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
         subgroups     = cfg["subgroups"]
         sg_acs        = cfg["subgroup_asset_classes"]
 
-        df = _build_product_df(office_val, asset_classes,
-                               dc.last_night_95, dc.t1_95, dc.today_str,
-                               dc.last_night_100, dc.t1_100)
+        def fetch_products(confidence, lookback, date, eod):
+            return _fetch_products(office_val, asset_classes,
+                                   confidence, lookback, date, eod)
+
+        df = build_var_table(
+            fetch_fn=fetch_products,
+            keys=["Product", "Asset_Class"],
+            dc=dc,
+            var_col="iVaR",
+            margin_col="Margin",
+        )
         # Derive subgroup from Asset_Class — no product→subgroup map needed
         df["Subgroup"] = df["Asset_Class"].map(ROLL_AC_TO_SUBGROUP).fillna("Other")
 
@@ -410,9 +377,17 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
             "_pnl1d": None, "_pnl5d": None,
         }
 
-        df = _build_product_df(office_val, product_acs,
-                               dc.last_night_95, dc.t1_95, dc.today_str,
-                               dc.last_night_100, dc.t1_100)
+        def fetch_products(confidence, lookback, date, eod):
+            return _fetch_products(office_val, product_acs,
+                                   confidence, lookback, date, eod)
+
+        df = build_var_table(
+            fetch_fn=fetch_products,
+            keys=["Product", "Asset_Class"],
+            dc=dc,
+            var_col="iVaR",
+            margin_col="Margin",
+        )
         df = df[df["Product"].isin(product_filter)]
 
         rows = [section_row]
