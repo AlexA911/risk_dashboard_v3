@@ -5,28 +5,28 @@ const api = axios.create({ baseURL: BASE_URL });
 
 export const getLocations                = ()                                              => api.get("/api/locations");
 export const getAssetClasses             = ()                                              => api.get("/api/asset-classes");
-export const getMetrics                  = (location, confidence, lookback)                => api.get("/api/metrics",                   { params: { location, confidence, lookback } });
-export const getRollingChart             = (location, confidence, lookback, days)          => api.get("/api/rolling-chart",             { params: { location, confidence, lookback, days } });
-export const getLocationTable            = (location)                                      => api.get("/api/location-table",            { params: { location } });
-export const getSectorChart              = (location, sector, confidence, lookback, days)  => api.get("/api/sector-chart",              { params: { location, sector, confidence, lookback, days } });
+export const getMetrics                  = (location, confidence, lookback)                => api.get("/api/metrics",                       { params: { location, confidence, lookback } });
+export const getRollingChart             = (location, confidence, lookback, days)          => api.get("/api/rolling-chart",                 { params: { location, confidence, lookback, days } });
+export const getLocationTable            = (location)                                      => api.get("/api/location-table",                { params: { location } });
+export const getSectorChart              = (location, sector, confidence, lookback, days)  => api.get("/api/sector-chart",                  { params: { location, sector, confidence, lookback, days } });
 export const getVixMargin                = ()                                              => fetch(`${BASE_URL}/api/vix-margin`).then(r => r.json());
-export const getProductChart             = (location, product, confidence, lookback, days) => api.get("/api/product-chart",             { params: { location, product, confidence, lookback, days } });
+export const getProductChart             = (location, product, confidence, lookback, days) => api.get("/api/product-chart",                 { params: { location, product, confidence, lookback, days } });
 export const getLastSnapshot             = ()                                              => fetch(`${BASE_URL}/api/last-snapshot`).then(r => r.json());
-export const getAssetClassTableGrouped   = (location)                                      => api.get("/api/asset-class-table-grouped", { params: { location } });
-export const getProductTableBySector     = (location, sector)                              => api.get("/api/product-table-by-sector",  { params: { location, sector } });
+export const getAssetClassTableGrouped   = (location)                                      => api.get("/api/asset-class-table-grouped",     { params: { location } });
+export const getProductTableBySector     = (location, sector)                              => api.get("/api/product-table-by-sector",       { params: { location, sector } });
 export const clearCache                  = ()                                              => api.post("/api/cache/clear");
 
 // ── Roll Risk tab ─────────────────────────────────────────────────────────────
-export const getRollRisk                 = (location)                                      => api.get("/api/roll-risk",                 { params: { location } });
-export const getRollRiskRolls            = (location)                                      => api.get("/api/roll-risk-rolls",           { params: { location } });
+export const getFiGroupRisk               = (location)                                     => api.get("/api/fi-group-risk",                 { params: { location } });
+export const getFiRollRisk           = (location)                                          => api.get("/api/fi-roll-risk",                  { params: { location } });
 
 // ── Analyst tab ───────────────────────────────────────────────────────────────
-export const getAnalysts                 = (location)                                      => api.get("/api/analysts",                  { params: { location } });
-export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",             { params: { analyst, office, confidence, lookback, days } });
-export const getAnalystProducts          = (analyst, office, confidence, lookback)         => api.get("/api/analyst-products",          { params: { analyst, office, confidence, lookback } });
-export const getAnalystProductChart      = (analyst, office, product, confidence, lookback, days) => api.get("/api/analyst-product-chart", { params: { analyst, office, product, confidence, lookback, days } });
-export const getHawkAnalystPnl           = (location)                                      => api.get("/api/hawk-analyst-pnl",         { params: { location } });
-export const getHawkAnalystProductPnl    = (analyst)                                       => api.get("/api/hawk-analyst-product-pnl",  { params: { analyst } });
+export const getAnalysts                 = (location)                                      => api.get("/api/analysts",                      { params: { location } });
+export const getAnalystChart             = (analyst, office, confidence, lookback, days)   => api.get("/api/analyst-chart",                 { params: { analyst, office, confidence, lookback, days } });
+export const getAnalystProducts          = (analyst, office, confidence, lookback)         => api.get("/api/analyst-products",              { params: { analyst, office, confidence, lookback } });
+export const getAnalystProductChart      = (analyst, office, product, confidence, lookback, days) => api.get("/api/analyst-product-chart",  { params: { analyst, office, product, confidence, lookback, days } });
+export const getHawkAnalystPnl           = (location)                                      => api.get("/api/hawk-analyst-pnl",              { params: { location } });
+export const getHawkAnalystProductPnl    = (analyst)                                       => api.get("/api/hawk-analyst-product-pnl",      { params: { analyst } });
 
 // ── HAWK P&L ──────────────────────────────────────────────────────────────────
 export const getHawkOfficePnl            = ()                                              => api.get("/api/hawk-office-pnl");

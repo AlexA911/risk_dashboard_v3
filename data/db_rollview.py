@@ -3,12 +3,12 @@ data/db_rollview.py — Queries for the Roll Risk tab.
 
 Two views:
 
-  RISK VIEW  (get_roll_risk)
+  RISK VIEW  (get_fi_group_risk)
     Fixed Income | Equities — full product breakdown with currency subgroups.
     Subgroup derived from Asset_Class directly — no separate product→subgroup map.
     Section total = Cumulus netted from Rates / Equity Indices asset classes.
 
-  ROLLS VIEW  (get_roll_risk_rolls)
+  ROLLS VIEW  (get_fi_roll_risk)
     FI Rolls | Equity Rolls — flat bond/equity product list, no STIRs, no subgroups.
     Section total = Cumulus netted from Asset_Class = 'FI Rolls' / 'Equity Rolls'.
 
@@ -237,7 +237,7 @@ def _make_product_row(row) -> dict:
 # Public: Risk view
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_roll_risk(location: str = "Total") -> list[dict]:
+def get_fi_group_risk(location: str = "Total") -> list[dict]:
     """
     Risk view — Fixed Income (bond+STIR products) and Equities.
     Subgroup derived from Asset_Class via ROLL_AC_TO_SUBGROUP.
@@ -336,7 +336,7 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
 # Public: Rolls view
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
+def get_fi_roll_risk(location: str = "Total") -> list[dict]:
     """
     Rolls view — FI Rolls (bond futures only, no STIRs) and Equity Rolls.
     Section total = Cumulus netted from Asset_Class = 'FI Rolls' / 'Equity Rolls'.

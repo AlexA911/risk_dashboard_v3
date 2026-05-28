@@ -24,7 +24,7 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getRollRisk, getRollRiskRolls, getHawkRollPnl } from "../api/client";
+import { getFiGroupRisk, getFiRollRisk, getHawkRollPnl } from "../api/client";
 import VarMarginChart from "./VarMarginChart";
 
 // ─── Section colours ──────────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ export default function RollRiskTab({ location, refreshKey }) {
   // Fetch Risk view + P&L in parallel
   useEffect(() => {
     setLoadingRisk(true); setErrorRisk(null);
-    Promise.all([getRollRisk(location), getHawkRollPnl()])
+    Promise.all([getFiGroupRisk(location), getHawkRollPnl()])
       .then(([riskRes, pnlRes]) => {
         const pnlMap   = buildPnlMap(pnlRes.data.data || []);
         const sections = colourSections(riskRes.data.sections, SECTION_COLOURS);
@@ -437,7 +437,7 @@ export default function RollRiskTab({ location, refreshKey }) {
   // Fetch Rolls view + P&L in parallel
   useEffect(() => {
     setLoadingRolls(true); setErrorRolls(null);
-    Promise.all([getRollRiskRolls(location), getHawkRollPnl()])
+    Promise.all([getFiRollRisk(location), getHawkRollPnl()])
       .then(([rollsRes, pnlRes]) => {
         const pnlMap   = buildPnlMap(pnlRes.data.data || []);
         const sections = colourSections(rollsRes.data.sections, SECTION_COLOURS);

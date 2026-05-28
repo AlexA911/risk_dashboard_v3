@@ -346,11 +346,11 @@ def hawk_analyst_product_pnl(analyst: str = Query(...)):
 # Roll Risk
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.get("/api/roll-risk")
-def roll_risk(location: str = "Total"):
+@app.get("/api/fi-group-risk")
+def fi_group_risk(location: str = "Total"):
     try:
-        key = f"roll-risk:{location}"
-        sections = get_cached(key, lambda: db_rollview.get_roll_risk(location))
+        key = f"fi-group-risk:{location}"
+        sections = get_cached(key, lambda: db_rollview.get_fi_group_risk(location))
         def sanitise(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
@@ -365,15 +365,15 @@ def roll_risk(location: str = "Total"):
         return {"sections": clean_sections}
     except Exception as e:
         import traceback
-        print(f"[ROLL-RISK-ROLLS ERROR] {traceback.format_exc()}")
+        print(f"[FI-GROUP-RISK ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
-@app.get("/api/roll-risk-rolls")
-def roll_risk_rolls(location: str = "Total"):
+@app.get("/api/fi-roll-risk")
+def fi_roll_risk(location: str = "Total"):
     try:
-        key = f"roll-risk-rolls:{location}"
-        sections = get_cached(key, lambda: db_rollview.get_roll_risk_rolls(location))
+        key = f"fi-roll-risk:{location}"
+        sections = get_cached(key, lambda: db_rollview.get_fi_roll_risk(location))
         def sanitise(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
@@ -388,9 +388,8 @@ def roll_risk_rolls(location: str = "Total"):
         return {"sections": clean_sections}
     except Exception as e:
         import traceback
-        print(f"[ROLL-RISK-ROLLS ERROR] {traceback.format_exc()}")
+        print(f"[FI-ROLL-RISK ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
-
 
 @app.get("/api/hawk-roll-pnl")
 def hawk_roll_pnl():
