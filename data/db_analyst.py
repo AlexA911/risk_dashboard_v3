@@ -10,7 +10,7 @@ Follows the same patterns as db_var.py:
   - get_connection() used as a context manager inside each function
   - Returns pd.DataFrame (not raw dicts)
   - EXCLUDED_OFFICES + FUTURES_FIRST_OFFICE from reference
-  - EOD dates resolved via OfficeRisk (same as db_var._get_latest_eod_dates)
+  - EOD dates resolved via OfficeRisk
 
 Note: Cumulus only computes intraday VaR for the top analysts by VaR size.
 Analysts not in the intraday run fall back to SOD values. IsIntraday=False
@@ -18,7 +18,7 @@ flags these rows so the frontend can display them differently.
 """
 
 import pandas as pd
-from data.dates import today
+from data.dates import today, get_latest_eod_dates
 from data.db_connection import get_connection
 from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
 
@@ -30,20 +30,6 @@ from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
 def _excl_ph():
     return ",".join(["?"] * len(EXCLUDED_OFFICES))
 
-
-def _get_latest_eod_dates(confidence: float, lookback: int, n: int = 1) -> list:
-    query = """
-        SELECT TOP (?) CONVERT(VARCHAR(10), Date, 23) AS Date
-        FROM dbo.OfficeRisk
-        WHERE IsEOD      = 1
-          AND Confidence = ?
-          AND Lookback   = ?
-        GROUP BY Date
-        ORDER BY Date DESC
-    """
-    with get_connection() as conn:
-        df = pd.read_sql(query, conn, params=[n, confidence, lookback])
-    return df["Date"].tolist()
 
 
 
@@ -63,8 +49,8 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
     """
     today_str = today()
 
-    eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
-    eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
+    eod_dates_95  = get_latest_eod_dates(95.0,  100, n=2)
+    eod_dates_100 = get_latest_eod_dates(100.0,  10, n=2)
 
     last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
@@ -216,7 +202,7 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
     """
     today_str = today()
 
-    eod_dates = _get_latest_eod_dates(confidence, lookback, n=2)
+    eod_dates = get_latest_eod_dates(confidence, lookback, n=2)
     last_night = eod_dates[0] if len(eod_dates) > 0 else today_str
     t1         = eod_dates[1] if len(eod_dates) > 1 else last_night
 

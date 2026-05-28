@@ -16,7 +16,7 @@ All reference data lives in data/reference.py. This file contains only queries.
 """
 
 import pandas as pd
-from data.dates import today
+from data.dates import today, get_latest_eod_dates
 from data.db_connection import get_connection
 from data.reference import (
     FUTURES_FIRST_OFFICE,
@@ -29,20 +29,6 @@ from data.reference import (
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _get_latest_eod_dates(confidence: float, lookback: int, n: int = 1) -> list:
-    query = """
-        SELECT TOP (?) CONVERT(VARCHAR(10), Date, 23) AS Date
-        FROM dbo.OfficeRisk
-        WHERE IsEOD      = 1
-          AND Confidence = ?
-          AND Lookback   = ?
-        GROUP BY Date
-        ORDER BY Date DESC
-    """
-    with get_connection() as conn:
-        df = pd.read_sql(query, conn, params=[n, confidence, lookback])
-    return df["Date"].tolist()
 
 
 
@@ -288,8 +274,8 @@ def _make_product_row(row) -> dict:
 
 def _get_dates():
     today_str      = today()
-    eod_95         = _get_latest_eod_dates(95.0,  100, n=2)
-    eod_100        = _get_latest_eod_dates(100.0,  10, n=2)
+    eod_95         = get_latest_eod_dates(95.0,  100, n=2)
+    eod_100        = get_latest_eod_dates(100.0,  10, n=2)
     last_night_95  = eod_95[0]  if eod_95  else today_str
     t1_95          = eod_95[1]  if len(eod_95)  > 1 else last_night_95
     last_night_100 = eod_100[0] if eod_100 else today_str
