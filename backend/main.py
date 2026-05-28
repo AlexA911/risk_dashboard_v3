@@ -364,6 +364,8 @@ def roll_risk(location: str = "Total"):
         ]
         return {"sections": clean_sections}
     except Exception as e:
+        import traceback
+        print(f"[ROLL-RISK-ROLLS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -385,6 +387,8 @@ def roll_risk_rolls(location: str = "Total"):
         ]
         return {"sections": clean_sections}
     except Exception as e:
+        import traceback
+        print(f"[ROLL-RISK-ROLLS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 

@@ -38,7 +38,7 @@ from data.reference import (
     SUBGROUP_ORDER,
     PRODUCT_SUBGROUP,
 )
-
+from data.dates import today
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -63,9 +63,6 @@ def _get_latest_eod_dates(confidence: float, lookback: int, n: int = 1) -> list:
     return df["Date"].tolist()
 
 
-def _today() -> str:
-    return pd.Timestamp.now().strftime("%Y-%m-%d")
-
 
 def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> pd.DataFrame:
     """
@@ -86,11 +83,11 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
     """
     eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
     eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
-    today         = _today()
+    today_str     = today()
 
-    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today
+    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
-    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today
+    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today_str
     t1_100         = eod_dates_100[1] if len(eod_dates_100) > 1 else last_night_100
 
     is_total = (office_val == FUTURES_FIRST_OFFICE)
@@ -169,7 +166,7 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
 
         s95  = fetch_netted(95.0,  100, last_night_95,  eod=True)
         t95  = fetch_netted(95.0,  100, t1_95,          eod=True)
-        c95  = fetch_netted(95.0,  100, today,           eod=False)
+        c95  = fetch_netted(95.0,  100, today_str,           eod=False)
         if c95.empty or c95['iVaR'].iloc[0] is None:
             c95 = s95.copy()
 
@@ -268,7 +265,7 @@ def get_metrics(location: str, confidence: float, lookback: int) -> dict:
     """
     with get_connection() as conn:
         intra = pd.read_sql(intraday_query, conn,
-                            params=[_today(), confidence, lookback, office_val])
+                            params=[today(), confidence, lookback, office_val])
 
     if not intra.empty:
         var_current    = float(intra["VaR"].iloc[0])
@@ -311,7 +308,7 @@ def get_vix_margin() -> dict:
     """
     with get_connection() as conn:
         sod_df   = pd.read_sql(sod_query,   conn)
-        intra_df = pd.read_sql(intra_query, conn, params=[_today()])
+        intra_df = pd.read_sql(intra_query, conn, params=[today()])
 
     vix_sod     = float(sod_df["Margin"].iloc[0])   if not sod_df.empty   else None
     vix_current = float(intra_df["Margin"].iloc[0]) if not intra_df.empty else vix_sod
@@ -642,7 +639,7 @@ def get_product_chart(location: str, product: str, confidence: float,
 # Location table
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today):
+def _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today_str):
     def fetch(confidence, lookback, date, eod):
         query = """
             SELECT Office, VaR, Margin
@@ -664,8 +661,8 @@ def _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today):
     sod_100 = fetch(100.0,  10, last_night_100,  eod=True)
     t1_95_  = fetch(95.0,  100, t1_95,           eod=True)
     t1_100_ = fetch(100.0,  10, t1_100,          eod=True)
-    cur_95  = fetch(95.0,  100, today,            eod=False)
-    cur_100 = fetch(100.0,  10, today,            eod=False)
+    cur_95  = fetch(95.0,  100, today_str,            eod=False)
+    cur_100 = fetch(100.0,  10, today_str,            eod=False)
 
     if cur_95.empty:  cur_95  = sod_95.copy()
     if cur_100.empty: cur_100 = sod_100.copy()
@@ -692,14 +689,14 @@ def _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today):
 
 
 def get_location_table(location: str = "Total") -> pd.DataFrame:
-    today = _today()
+    today_str = today()
 
     eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
     eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
 
-    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today
+    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
-    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today
+    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today_str
     t1_100         = eod_dates_100[1] if len(eod_dates_100) > 1 else last_night_100
 
     if location == "Total":
@@ -742,7 +739,7 @@ def get_location_table(location: str = "Total") -> pd.DataFrame:
               AND {where}
         """
         with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[today, confidence, lookback] + params)
+            return pd.read_sql(query, conn, params=[today_str, confidence, lookback] + params)
 
     sod_95  = fetch_eod(95.0,  100, last_night_95)
     t1_95_  = fetch_eod(95.0,  100, t1_95)
@@ -789,7 +786,7 @@ def get_location_table(location: str = "Total") -> pd.DataFrame:
     df = df.sort_values("VaR_100D", ascending=False).reset_index(drop=True)
 
     if location == "Total":
-        ff = _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today)
+        ff = _get_ff_row(last_night_95, last_night_100, t1_95, t1_100, today_str)
         df = pd.concat([ff, df], ignore_index=True)
 
     return df
@@ -800,9 +797,9 @@ def get_location_table(location: str = "Total") -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_analyst_table(location: str = "Total") -> pd.DataFrame:
-    today          = _today()
-    last_night_95  = (_get_latest_eod_dates(95.0,  100, n=1) or [today])[0]
-    last_night_100 = (_get_latest_eod_dates(100.0,  10, n=1) or [today])[0]
+    today_str      = today()
+    last_night_95  = (_get_latest_eod_dates(95.0,  100, n=1) or [today_str])[0]
+    last_night_100 = (_get_latest_eod_dates(100.0,  10, n=1) or [today_str])[0]
 
     if location == "Total":
         where  = f"Office NOT IN ({_excl_ph()})"
@@ -845,7 +842,7 @@ def get_analyst_table(location: str = "Total") -> pd.DataFrame:
               AND {where}
         """
         with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[today, confidence, lookback] + params)
+            return pd.read_sql(query, conn, params=[today_str, confidence, lookback] + params)
 
     sod_95  = fetch_eod(95.0,  100, last_night_95)
     sod_100 = fetch_eod(100.0,  10, last_night_100)
@@ -900,14 +897,14 @@ def get_asset_class_table_grouped(location: str = "Total") -> pd.DataFrame:
               "VaR_100D", "Delta_100D", "Delta_100D_t1",
               "Margin", "Delta_Margin", "Delta_Margin_t1"]
 
-    today = _today()
+    today_str = today()
 
     eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
     eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
 
-    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today
+    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
-    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today
+    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today_str
     t1_100         = eod_dates_100[1] if len(eod_dates_100) > 1 else last_night_100
 
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -954,10 +951,10 @@ def get_asset_class_table_grouped(location: str = "Total") -> pd.DataFrame:
 
     sod_95  = fetch(95.0,  100, last_night_95,  eod=True)
     t1_95_  = fetch(95.0,  100, t1_95,          eod=True)
-    cur_95  = fetch(95.0,  100, today,           eod=False)
+    cur_95  = fetch(95.0,  100, today_str,           eod=False)
     sod_100 = fetch(100.0,  10, last_night_100,  eod=True)
     t1_100_ = fetch(100.0,  10, t1_100,          eod=True)
-    cur_100 = fetch(100.0,  10, today,            eod=False)
+    cur_100 = fetch(100.0,  10, today_str,            eod=False)
 
     if sod_95.empty and cur_95.empty:
         return pd.DataFrame(columns=_EMPTY)
@@ -1041,14 +1038,14 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
     if not asset_classes:
         return pd.DataFrame(columns=_EMPTY + ["_rowType"])
 
-    today = _today()
+    today_str = today()
 
     eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
     eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
 
-    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today
+    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
-    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today
+    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today_str
     t1_100         = eod_dates_100[1] if len(eod_dates_100) > 1 else last_night_100
 
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -1102,10 +1099,10 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
 
     sod_95  = fetch(95.0,  100, last_night_95,  eod=True)
     t1_95_  = fetch(95.0,  100, t1_95,          eod=True)
-    cur_95  = fetch(95.0,  100, today,           eod=False)
+    cur_95  = fetch(95.0,  100, today_str,           eod=False)
     sod_100 = fetch(100.0,  10, last_night_100,  eod=True)
     t1_100_ = fetch(100.0,  10, t1_100,          eod=True)
-    cur_100 = fetch(100.0,  10, today,            eod=False)
+    cur_100 = fetch(100.0,  10, today_str,            eod=False)
 
     if sod_95.empty and cur_95.empty:
         return pd.DataFrame(columns=_EMPTY + ["_rowType"])

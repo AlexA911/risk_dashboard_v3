@@ -16,6 +16,7 @@ All reference data lives in data/reference.py. This file contains only queries.
 """
 
 import pandas as pd
+from data.dates import today
 from data.db_connection import get_connection
 from data.reference import (
     FUTURES_FIRST_OFFICE,
@@ -43,9 +44,6 @@ def _get_latest_eod_dates(confidence: float, lookback: int, n: int = 1) -> list:
         df = pd.read_sql(query, conn, params=[n, confidence, lookback])
     return df["Date"].tolist()
 
-
-def _today() -> str:
-    return pd.Timestamp.now().strftime("%Y-%m-%d")
 
 
 def _d(a, b):
@@ -226,14 +224,14 @@ def _fetch_rolls_netted(office_val, sql_asset_class, confidence, lookback, date,
 
 
 def _build_product_df(office_val, asset_classes,
-                      last_night_95, t1_95, today,
+                      last_night_95, t1_95, today_str,
                       last_night_100, t1_100):
     sod_95  = _fetch_products(office_val, asset_classes, 95.0,  100, last_night_95,  eod=True)
     t1_95_  = _fetch_products(office_val, asset_classes, 95.0,  100, t1_95,          eod=True)
-    cur_95  = _fetch_products(office_val, asset_classes, 95.0,  100, today,           eod=False)
+    cur_95  = _fetch_products(office_val, asset_classes, 95.0,  100, today_str,           eod=False)
     sod_100 = _fetch_products(office_val, asset_classes, 100.0,  10, last_night_100,  eod=True)
     t1_100_ = _fetch_products(office_val, asset_classes, 100.0,  10, t1_100,          eod=True)
-    cur_100 = _fetch_products(office_val, asset_classes, 100.0,  10, today,            eod=False)
+    cur_100 = _fetch_products(office_val, asset_classes, 100.0,  10, today_str,            eod=False)
 
     if cur_95.empty:  cur_95  = sod_95.copy()
     if cur_100.empty: cur_100 = sod_100.copy()
@@ -289,14 +287,14 @@ def _make_product_row(row) -> dict:
 
 
 def _get_dates():
-    today          = _today()
+    today_str      = today()
     eod_95         = _get_latest_eod_dates(95.0,  100, n=2)
     eod_100        = _get_latest_eod_dates(100.0,  10, n=2)
-    last_night_95  = eod_95[0]  if eod_95  else today
+    last_night_95  = eod_95[0]  if eod_95  else today_str
     t1_95          = eod_95[1]  if len(eod_95)  > 1 else last_night_95
-    last_night_100 = eod_100[0] if eod_100 else today
+    last_night_100 = eod_100[0] if eod_100 else today_str
     t1_100         = eod_100[1] if len(eod_100) > 1 else last_night_100
-    return today, last_night_95, t1_95, last_night_100, t1_100
+    return today_str, last_night_95, t1_95, last_night_100, t1_100
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -310,7 +308,7 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
     Section total = Cumulus netted from Rates / Equity Indices.
     P&L is None here — merged client-side from /api/hawk-roll-pnl.
     """
-    today, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
+    today_str, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
 
     result = []
@@ -321,15 +319,15 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
         sg_acs        = cfg["subgroup_asset_classes"]
 
         df = _build_product_df(office_val, asset_classes,
-                               last_night_95, t1_95, today,
+                               last_night_95, t1_95, today_str,
                                last_night_100, t1_100)
         # Derive subgroup from Asset_Class — no product→subgroup map needed
         df["Subgroup"] = df["Asset_Class"].map(ROLL_AC_TO_SUBGROUP).fillna("Other")
 
-        sec100_cur, sec_mar_cur = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, today,          eod=False)
+        sec100_cur, sec_mar_cur = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, today_str,          eod=False)
         sec100_sod, sec_mar_sod = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, last_night_95,  eod=True)
         sec100_t1,  sec_mar_t1  = _fetch_subgroup_netted(office_val, asset_classes, 95.0,  100, t1_95,          eod=True)
-        sec10_cur,  _           = _fetch_subgroup_netted(office_val, asset_classes, 100.0,  10, today,          eod=False)
+        sec10_cur,  _           = _fetch_subgroup_netted(office_val, asset_classes, 100.0,  10, today_str,          eod=False)
         sec10_sod,  _           = _fetch_subgroup_netted(office_val, asset_classes, 100.0,  10, last_night_100, eod=True)
         sec10_t1,   _           = _fetch_subgroup_netted(office_val, asset_classes, 100.0,  10, t1_100,         eod=True)
 
@@ -355,10 +353,10 @@ def get_roll_risk(location: str = "Total") -> list[dict]:
 
         for sg in subgroups:
             acs = sg_acs.get(sg, [])
-            var100_cur, mar_cur = _fetch_subgroup_netted(office_val, acs, 95.0,  100, today,          eod=False)
+            var100_cur, mar_cur = _fetch_subgroup_netted(office_val, acs, 95.0,  100, today_str,          eod=False)
             var100_sod, mar_sod = _fetch_subgroup_netted(office_val, acs, 95.0,  100, last_night_95,  eod=True)
             var100_t1,  mar_t1  = _fetch_subgroup_netted(office_val, acs, 95.0,  100, t1_95,          eod=True)
-            var10_cur,  _       = _fetch_subgroup_netted(office_val, acs, 100.0,  10, today,          eod=False)
+            var10_cur,  _       = _fetch_subgroup_netted(office_val, acs, 100.0,  10, today_str,          eod=False)
             var10_sod,  _       = _fetch_subgroup_netted(office_val, acs, 100.0,  10, last_night_100, eod=True)
             var10_t1,   _       = _fetch_subgroup_netted(office_val, acs, 100.0,  10, t1_100,         eod=True)
 
@@ -400,7 +398,7 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
     Section total = Cumulus netted from Asset_Class = 'FI Rolls' / 'Equity Rolls'.
     P&L is None here — merged client-side from /api/hawk-roll-pnl.
     """
-    today, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
+    today_str, last_night_95, t1_95, last_night_100, t1_100 = _get_dates()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
 
     result = []
@@ -410,10 +408,10 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
         product_acs    = cfg["product_asset_classes"]
         product_filter = cfg["product_filter"]
 
-        sec100_cur, sec_mar_cur = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, today,          eod=False)
+        sec100_cur, sec_mar_cur = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, today_str,      eod=False)
         sec100_sod, sec_mar_sod = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, last_night_95,  eod=True)
         sec100_t1,  sec_mar_t1  = _fetch_rolls_netted(office_val, sql_ac, 95.0,  100, t1_95,          eod=True)
-        sec10_cur,  _           = _fetch_rolls_netted(office_val, sql_ac, 100.0,  10, today,          eod=False)
+        sec10_cur,  _           = _fetch_rolls_netted(office_val, sql_ac, 100.0,  10, today_str,      eod=False)
         sec10_sod,  _           = _fetch_rolls_netted(office_val, sql_ac, 100.0,  10, last_night_100, eod=True)
         sec10_t1,   _           = _fetch_rolls_netted(office_val, sql_ac, 100.0,  10, t1_100,         eod=True)
 
@@ -436,7 +434,7 @@ def get_roll_risk_rolls(location: str = "Total") -> list[dict]:
         }
 
         df = _build_product_df(office_val, product_acs,
-                               last_night_95, t1_95, today,
+                               last_night_95, t1_95, today_str,
                                last_night_100, t1_100)
         df = df[df["Product"].isin(product_filter)]
 

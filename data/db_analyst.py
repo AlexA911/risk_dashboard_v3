@@ -18,6 +18,7 @@ flags these rows so the frontend can display them differently.
 """
 
 import pandas as pd
+from data.dates import today
 from data.db_connection import get_connection
 from data.reference import EXCLUDED_OFFICES, FUTURES_FIRST_OFFICE
 
@@ -45,9 +46,6 @@ def _get_latest_eod_dates(confidence: float, lookback: int, n: int = 1) -> list:
     return df["Date"].tolist()
 
 
-def _today() -> str:
-    return pd.Timestamp.now().strftime("%Y-%m-%d")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Analyst summary table
@@ -63,14 +61,14 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
       Margin,   Delta_Margin, Delta_Margin_t1,
       IsIntraday  — False if analyst not in intraday run (showing SOD fallback)
     """
-    today = _today()
+    today_str = today()
 
     eod_dates_95  = _get_latest_eod_dates(95.0,  100, n=2)
     eod_dates_100 = _get_latest_eod_dates(100.0,  10, n=2)
 
-    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today
+    last_night_95  = eod_dates_95[0]  if len(eod_dates_95)  > 0 else today_str
     t1_95          = eod_dates_95[1]  if len(eod_dates_95)  > 1 else last_night_95
-    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today
+    last_night_100 = eod_dates_100[0] if len(eod_dates_100) > 0 else today_str
     t1_100         = eod_dates_100[1] if len(eod_dates_100) > 1 else last_night_100
 
     if location == "Total":
@@ -114,7 +112,7 @@ def get_analyst_table_for_tab(location: str = "Total") -> pd.DataFrame:
               AND {where}
         """
         with get_connection() as conn:
-            return pd.read_sql(query, conn, params=[today, confidence, lookback] + params)
+            return pd.read_sql(query, conn, params=[today_str, confidence, lookback] + params)
 
     sod_95  = fetch_eod(95.0,  100, last_night_95)
     t1_95_  = fetch_eod(95.0,  100, t1_95)
@@ -216,10 +214,10 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
     Returns columns: Asset_Class, Product, iVaR, Margin,
                      Delta_iVaR (vs last EOD), Delta_iVaR_t1 (vs t-1 EOD)
     """
-    today = _today()
+    today_str = today()
 
     eod_dates = _get_latest_eod_dates(confidence, lookback, n=2)
-    last_night = eod_dates[0] if len(eod_dates) > 0 else today
+    last_night = eod_dates[0] if len(eod_dates) > 0 else today_str
     t1         = eod_dates[1] if len(eod_dates) > 1 else last_night
 
     def fetch_eod(date):
@@ -264,7 +262,7 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
         """
         with get_connection() as conn:
             return pd.read_sql(query, conn,
-                               params=[today, analyst, office, confidence, lookback])
+                               params=[today_str, analyst, office, confidence, lookback])
 
     sod  = fetch_eod(last_night)
     t1_  = fetch_eod(t1)
