@@ -70,3 +70,28 @@ top and accesses dates via `dc.today_str`, `dc.last_night_95` etc.
 **Local variable rename:** `today_str` → `dc.today_str` throughout. Note that
 `_get_ff_row()` in db_office.py still takes `today_str` as a parameter name —
 this is intentional, callers pass `dc.today_str` as the argument.
+
+## 2026-05-28 — Stage 4: Introduce build_var_table() helper
+
+**New file:** `data/query_helpers.py`
+
+**Reason:** Every table function contained an identical 35-line block —
+6 fetches across two VaR configs and two EOD dates, SOD fallback,
+column rename, outer merge, and 9-column delta computation. This block
+appeared in 6 functions across 3 files (~210 lines total).
+
+**Change:** `build_var_table(fetch_fn, keys, dc, var_col, margin_col)`
+takes a caller-provided fetch function and a DateContext, and owns all
+the structural assembly work. Each table function now provides only the
+SQL (10-15 lines) and calls build_var_table() for the rest.
+
+**Functions converted:**
+- db_office.py: get_location_table, get_analyst_table,
+  get_asset_class_table_grouped, get_product_table_by_sector
+- db_analyst.py: (get_analyst_table_for_tab left as-is — per-row
+  IsIntraday fallback logic doesn't fit the generic helper cleanly)
+- db_rollview.py: _build_product_df deleted, both call sites replaced
+  with local fetch_products + build_var_table
+
+**Note:** var_col defaults to "VaR" for office/analyst queries,
+set to "iVaR" for product-level queries.
