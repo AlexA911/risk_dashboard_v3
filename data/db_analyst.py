@@ -10,7 +10,7 @@ Follows the same patterns as db_var.py:
   - get_connection() used as a context manager inside each function
   - Returns pd.DataFrame (not raw dicts)
   - EXCLUDED_OFFICES + FUTURES_FIRST_OFFICE from reference
-  - EOD dates resolved via OfficeRisk
+  - EOD dates resolved via OfficeRisk same as db_summary
 
 Note: Cumulus only computes intraday VaR for the top analysts by VaR size.
 Analysts not in the intraday run fall back to SOD values. IsIntraday=False
