@@ -60,7 +60,7 @@ SECTOR_ORDER = [
 # ─── 4. FF_Risk: Sector → Asset classes ──────────────────────────────────────
 
 SECTOR_ASSET_CLASSES = {
-    "Energy":     ["Oils", "Oils - Crude", "WTI", "Natural Gas", "Oil Refined", "Power & Carbon"],
+    "Energy":     ["Oils", "Oils - Crude", "WTI", "NG", "Oils - Refined", "Power & Carbon"],
     "Rates":      ["USD Rates", "GBP Rates", "EUR Rates", "CAD Rates", "AUD Rates", "CHF Rates"],
     "Equities":   ["Equity Indices"],
     "Volatility": ["Volatility Indices"],
@@ -110,8 +110,8 @@ SUBGROUP_NETTED_ASSET_CLASSES = {
     "Oils Total":         ["Oils"],
     "Oils - Crude":       ["Oils - Crude"],
     "WTI":                ["WTI"],
-    "Oil Refined":        ["Oils - Refined"],
-    "Natural Gas":        ["NG"],
+    "Oils - Refined":      ["Oils - Refined"],
+    "NG":                 ["NG"],
     "Power & Carbon":     [],
     # Rates
     "USD":                ["USD Rates"],
@@ -144,7 +144,7 @@ SUBGROUP_NETTED_ASSET_CLASSES = {
 # ─── 7. FF_Risk: Subgroup display order per sector ────────────────────────────
 
 SUBGROUP_ORDER = {
-    "Energy":     ["Oils Total", "Oils - Crude", "WTI", "Oil Refined", "Natural Gas", "Power & Carbon"],
+    "Energy":     ["Oils Total", "Oils - Crude", "WTI", "Oils - Refined", "NG", "Power & Carbon"],
     "Rates":      ["USD", "GBP", "EUR", "CAD", "AUD", "CHF"],
     "Metals":     ["Precious", "Base"],
     "Ags":        ["Grains", "Livestock", "Dairy"],
@@ -173,19 +173,19 @@ PRODUCT_SUBGROUP = {
     "ICE WTI Crude TAS":                                       "WTI",
     "Micro WTI Crude Oil Futures":                             "WTI",
     # Energy: Natural Gas
-    "ICE Dutch TTF Gas Futures":                               "Natural Gas",
-    "ICE UK Natural Gas":                                      "Natural Gas",
-    "Micro Henry Hub Natural Gas":                             "Natural Gas",
-    "Natural Gas":                                             "Natural Gas",
-    "Natural Gas (Henry Hub) Penultimate Financial Futures":   "Natural Gas",
-    "Natural Gas (HH) (Henry Hub) Last-day Financial Futures": "Natural Gas",
+    "ICE Dutch TTF Gas Futures":                               "NG",
+    "ICE UK Natural Gas":                                      "NG",
+    "Micro Henry Hub Natural Gas":                             "NG",
+    "Natural Gas":                                             "NG",
+    "Natural Gas (Henry Hub) Penultimate Financial Futures":   "NG",
+    "Natural Gas (HH) (Henry Hub) Last-day Financial Futures": "NG",
     # Energy: Oil Refined
-    "Heating Oil":                                             "Oil Refined",
-    "ICE LS GasOil":                                           "Oil Refined",
-    "ICE LS GasOil TAS":                                       "Oil Refined",
-    "Low Sulphur Gasoil":                                      "Oil Refined",
-    "NY Harbor ULSD":                                          "Oil Refined",
-    "RBOB Gasoline":                                           "Oil Refined",
+    "Heating Oil":                                             "Oils - Refined",
+    "ICE LS GasOil":                                           "Oils - Refined",
+    "ICE LS GasOil TAS":                                       "Oils - Refined",
+    "Low Sulphur Gasoil":                                      "Oils - Refined",
+    "NY Harbor ULSD":                                          "Oils - Refined",
+    "RBOB Gasoline":                                           "Oils - Refined",
     # Energy: Power & Carbon
     "EEX French Power Bs M Ftr":                               "Power & Carbon",
     "EEX German Power Bs M Ftr":                               "Power & Carbon",

@@ -1,5 +1,5 @@
 /**
- * LocationTableAG.jsx
+ * SummaryTable.jsx
  * AG Grid replacement for LocationTable and LocationTable_New.
  *
  * Level 1: Office rows  — click to show sector breakdown below
@@ -9,6 +9,7 @@
  *
  * P&L columns (1D, 5D) sourced from HAWK parquet cache via /api/hawk-office-pnl.
  * Fetched in parallel with VaR data and merged client-side by Office name.
+ * Subgroup and sector-level P&L is aggregated client-side by summing constituent products.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -70,12 +71,13 @@ function NumRenderer({ value, data }) {
   return <span>{Math.round(Math.abs(value)).toLocaleString("en-GB")}</span>;
 }
 
-function PnlRenderer({ value }) {
+function PnlRenderer({ value, data }) {
   if (value === null || value === undefined)
     return <span style={{ color: "#94a3b8" }}>—</span>;
-  const positive = value >= 0;
+  const positive   = value >= 0;
+  const isSubgroup = data?._rowType === "subgroup";
   return (
-    <span style={{ color: positive ? "#22c55e" : "#ef4444", fontWeight: 500 }}>
+    <span style={{ color: positive ? "#22c55e" : "#ef4444", fontWeight: isSubgroup ? 700 : 500 }}>
       {positive ? "" : "-"}{Math.abs(Math.round(value)).toLocaleString("en-GB")}
     </span>
   );
@@ -241,7 +243,7 @@ function VarToggle({ varMode, setVarMode }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function LocationTableAG({
+export default function SummaryTable({
   location, refreshKey,
   onOfficeClick, onSectorClick, onProductClick,
   simple = false,
@@ -251,19 +253,23 @@ export default function LocationTableAG({
   const [locLoading,     setLocLoading]     = useState(true);
   const [locError,       setLocError]       = useState(null);
   const [selectedOffice, setSelectedOffice] = useState(null);
-  const [sectorData,     setSectorData]     = useState([]);
+  const [sectorCache,    setSectorCache]    = useState({});  // { office: rows[] }
   const [sectorLoading,  setSectorLoading]  = useState(false);
   const [sectorError,    setSectorError]    = useState(null);
   const [sectorApiLoc,   setSectorApiLoc]   = useState(null);
   const [expandedSector, setExpandedSector] = useState(null);
-  const [productState,   setProductState]   = useState({});
+  const [productCache,   setProductCache]   = useState({});  // { office: { sector: { loading, error, data } } }
   const [varMode,        setVarMode]        = useState("100D");
+
+  // Derived: sector rows and product state for the currently selected office
+  const sectorData    = selectedOffice ? (sectorCache[selectedOffice]   ?? []) : [];
+  const productState  = selectedOffice ? (productCache[selectedOffice]  ?? {}) : {};
 
   // ── Load office data + HAWK P&L in parallel ───────────────────────────────
   useEffect(() => {
     setLocLoading(true); setLocError(null);
-    setSelectedOffice(null); setSectorData([]);
-    setExpandedSector(null); setProductState({});
+    setSelectedOffice(null); setSectorCache({});
+    setExpandedSector(null); setProductCache({});
 
     Promise.all([
       getLocationTable(location),
@@ -297,39 +303,57 @@ export default function LocationTableAG({
   const handleOfficeClick = useCallback((office) => {
     if (simple) return;
     if (onOfficeClick) onOfficeClick(office);
+
+    // Toggle off
     if (selectedOffice === office) {
-      setSelectedOffice(null); setSectorData([]);
-      setExpandedSector(null); setProductState({});
+      setSelectedOffice(null);
+      setExpandedSector(null);
       return;
     }
-    setSelectedOffice(office);
-    setSectorData([]); setSectorLoading(true); setSectorError(null);
-    setExpandedSector(null); setProductState({});
+
     const apiLoc = office === "Futures First" ? "Total" : office;
+    setSelectedOffice(office);
+    setExpandedSector(null);
     setSectorApiLoc(apiLoc);
+
+    // Use cached sector data if available
+    if (sectorCache[office]) return;
+
+    setSectorLoading(true); setSectorError(null);
     getAssetClassTableGrouped(apiLoc)
       .then(r => {
-        setSectorData((r.data.data || []).map(row => ({ ...row, name: row.Sector })));
+        const rows = (r.data.data || []).map(row => ({
+          ...row,
+          name:   row.Sector,
+          _pnl1d: row.PnL_1D ?? null,
+          _pnl5d: row.PnL_5D ?? null,
+        }));
+        setSectorCache(prev => ({ ...prev, [office]: rows }));
         setSectorLoading(false);
       })
       .catch(e => { setSectorError(e.message); setSectorLoading(false); });
-  }, [simple, selectedOffice, onOfficeClick]);
+  }, [simple, selectedOffice, sectorCache, onOfficeClick]);
 
   // ── Sector click ──────────────────────────────────────────────────────────
   const handleSectorClick = useCallback((sector) => {
     if (onSectorClick) onSectorClick(sector, selectedOffice);
     if (expandedSector === sector) { setExpandedSector(null); return; }
     setExpandedSector(sector);
-    if (productState[sector]?.data) return;
-    setProductState(prev => ({ ...prev, [sector]: { loading: true, error: null, data: null } }));
+
+    // Use cached product data for this office+sector if available
+    if (productCache[selectedOffice]?.[sector]?.data) return;
+
+    setProductCache(prev => ({
+      ...prev,
+      [selectedOffice]: { ...prev[selectedOffice], [sector]: { loading: true, error: null, data: null } },
+    }));
+
     Promise.all([
       getProductTableBySector(sectorApiLoc, sector),
       getHawkProductPnl(sectorApiLoc, sector),
     ])
       .then(([varRes, pnlRes]) => {
         const colour = SECTOR_COLOURS[sector] ?? "#94a3b8";
-
-        // Build product → { _pnl1d, _pnl5d } lookup
         const pnlMap = {};
         for (const row of (pnlRes.data.data || [])) {
           pnlMap[row.Product] = { _pnl1d: row.PnL_1D, _pnl5d: row.PnL_5D };
@@ -339,14 +363,69 @@ export default function LocationTableAG({
           ...row,
           name:          row.Product,
           _sectorColour: colour,
-          // Subgroup header rows won't match any product → stays null → renders "—"
           _pnl1d:        pnlMap[row.Product]?._pnl1d ?? null,
           _pnl5d:        pnlMap[row.Product]?._pnl5d ?? null,
         }));
-        setProductState(prev => ({ ...prev, [sector]: { loading: false, error: null, data: rows } }));
+        console.log(rows.map(r => ({ name: r.name, rowType: r._rowType, pnl1d: r._pnl1d })));
+
+        // ── Pass 1: aggregate product P&L up to immediate subgroup rows ──────
+        let subgroupIdx = null;
+        let sub1d = 0, sub5d = 0;
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i]._rowType === "subgroup") {
+            if (subgroupIdx !== null) {
+              rows[subgroupIdx] = { ...rows[subgroupIdx], _pnl1d: sub1d || null, _pnl5d: sub5d || null };
+            }
+            subgroupIdx = i; sub1d = 0; sub5d = 0;
+          } else {
+            sub1d += rows[i]._pnl1d ?? 0;
+            sub5d += rows[i]._pnl5d ?? 0;
+          }
+        }
+        if (subgroupIdx !== null) {
+          rows[subgroupIdx] = { ...rows[subgroupIdx], _pnl1d: sub1d || null, _pnl5d: sub5d || null };
+        }
+
+        // ── Pass 2: roll child subgroup P&L up into parent subgroups ─────────
+        // Defines which subgroups are children of a parent subgroup.
+        // Parent P&L = sum of its named children's P&L after pass 1.
+        const SUBGROUP_PARENTS = {
+          "Oils Total": ["Oils - Crude", "WTI", "Oil Refined"],
+        };
+
+        // Build a name → row index lookup for quick access
+        const subgroupByName = {};
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i]._rowType === "subgroup") subgroupByName[rows[i].name] = i;
+        }
+
+        for (const [parent, children] of Object.entries(SUBGROUP_PARENTS)) {
+          if (subgroupByName[parent] === undefined) continue;
+          let p1d = 0, p5d = 0;
+          for (const child of children) {
+            const idx = subgroupByName[child];
+            if (idx !== undefined) {
+              p1d += rows[idx]._pnl1d ?? 0;
+              p5d += rows[idx]._pnl5d ?? 0;
+            }
+          }
+          rows[subgroupByName[parent]] = {
+            ...rows[subgroupByName[parent]],
+            _pnl1d: p1d || null,
+            _pnl5d: p5d || null,
+          };
+        }
+
+        setProductCache(prev => ({
+          ...prev,
+          [selectedOffice]: { ...prev[selectedOffice], [sector]: { loading: false, error: null, data: rows } },
+        }));
       })
-      .catch(e => setProductState(prev => ({ ...prev, [sector]: { loading: false, error: e.message, data: null } })));
-  }, [selectedOffice, expandedSector, productState, sectorApiLoc, onSectorClick]);
+      .catch(e => setProductCache(prev => ({
+        ...prev,
+        [selectedOffice]: { ...prev[selectedOffice], [sector]: { loading: false, error: e.message, data: null } },
+      })));
+  }, [selectedOffice, expandedSector, productCache, sectorApiLoc, onSectorClick]);
 
   // ── Column defs ───────────────────────────────────────────────────────────
   const officeCols  = useMemo(() => buildColumns(varMode, OfficeNameRenderer,  "Location"), [varMode]);
@@ -456,8 +535,8 @@ export default function LocationTableAG({
               title="Sector Breakdown"
               subtitle={`· ${selectedOffice === "Futures First" ? "Futures First — Total" : selectedOffice}`}
               onClose={() => {
-                setSelectedOffice(null); setSectorData([]);
-                setExpandedSector(null); setProductState({});
+                setSelectedOffice(null);
+                setExpandedSector(null);
                 if (onOfficeClick) onOfficeClick("Futures First");
               }}
             />

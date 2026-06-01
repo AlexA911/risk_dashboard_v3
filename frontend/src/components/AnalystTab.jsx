@@ -47,7 +47,7 @@ const NAVBAR_HEIGHT = 48;
 const PAGE_PAD      = 32;
 const PANEL_HEIGHT  = `calc(100vh - ${NAVBAR_HEIGHT + PAGE_PAD}px)`;
 
-// Sector colour palette — mirrors LocationTableAG so the same sector has the
+// Sector colour palette — mirrors SummaryTable so the same sector has the
 // same colour across the dashboard.
 const SECTOR_COLOURS = {
   "Energy":     "#f97316",

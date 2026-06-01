@@ -228,8 +228,16 @@ def asset_class_table(location: str = "Total"):
 @app.get("/api/asset-class-table-grouped")
 def asset_class_table_grouped(location: str = "Total"):
     try:
-        key = f"asset-class-table-grouped:{location}"
-        df = get_cached(key, lambda: db_summary.get_asset_class_table_grouped(location))
+        def fetch():
+            df  = get_cached(f"asset-class-table-grouped-risk:{location}",
+                             lambda: db_summary.get_asset_class_table_grouped(location))
+            pnl = get_cached(f"hawk-sector-pnl:{location}",
+                             lambda: db_hawk.get_sector_pnl(location))
+            if not pnl.empty:
+                df = df.merge(pnl, on="Sector", how="left")
+            return df
+
+        df = get_cached(f"asset-class-table-grouped:{location}", fetch)
         return {"data": clean(df)}
     except Exception as e:
         import traceback

@@ -11,8 +11,7 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import { getMetrics, getVixMargin } from "../api/client";
-
-const LIMIT = 13_500_000;
+import { LIMIT, calcUtilisation, utilisationColour } from "../utils/limitUtilisation";
 
 function fmtK(val) {
   if (val === null || val === undefined || isNaN(val)) return "—";
@@ -59,12 +58,6 @@ function fmtChangePct(current, sod) {
   };
 }
 
-function utilisationColour(ratio) {
-  if (ratio == null) return "text.primary";
-  if (ratio >= 0.9)  return "#ef4444";
-  if (ratio >= 0.75) return "#f97316";
-  return "text.primary";
-}
 
 function MetricCard({ label, value, change, placeholder, valueColour, vixLabel }) {
   return (
@@ -167,10 +160,8 @@ export default function MetricsRow({ location }) {
   const imSod        = data100.margin_sod;
   const vixCurrent   = vix?.vix_current ?? 0;
   const vixSod       = vix?.vix_sod     ?? 0;
-  const utilDenom    = LIMIT + vixCurrent;
-  const utilDenomSod = LIMIT + vixSod;
-  const utilRatio    = imCurrent != null ? imCurrent / utilDenom    : null;
-  const utilSod      = imSod     != null ? imSod     / utilDenomSod : null;
+  const utilRatio    = calcUtilisation(imCurrent, vixCurrent);
+  const utilSod      = calcUtilisation(imSod, vixSod);
 
   return (
     <Box sx={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1.5, mb: 2 }}>

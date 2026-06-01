@@ -14,7 +14,7 @@ import { useState, useEffect, useCallback } from "react";
 import NavBar from "./components/NavBar";
 import MetricsRow from "./components/MetricsRow";
 import VarMarginChart from "./components/VarMarginChart";
-import LocationTableAG from "./components/LocationTableAG";
+import SummaryTable from "./components/SummaryTable";
 import AnalystTab from "./components/AnalystTab";
 import RollRiskTab from "./components/RollRiskTab";
 import "./index.css";
@@ -148,7 +148,7 @@ export default function App() {
         {activePage === "Summary" && (
           <>
             <MetricsRow location={location} refreshKey={refreshKey} />
-            <LocationTableAG
+            <SummaryTable
               location={location}
               refreshKey={refreshKey}
               onOfficeClick={handleOfficeClick}

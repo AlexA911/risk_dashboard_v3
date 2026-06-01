@@ -24,12 +24,20 @@ Known data note:
     AWS RDS instance (TM-DBINST1.CTMLJWOTKQUZ.EU-WEST-1.RDS.AMAZONAWS.COM)
     by a small amount. Revisit if gap widens significantly.
 
+Performance note:
+  - Product parquet is ~840k rows. To avoid re-loading and re-processing on
+    every request, both the analyst and product DataFrames are cached at
+    module level after first load (_ANALYST_DF, _PRODUCT_DF).
+  - Sector mapping is pre-computed vectorised on first load (no row-by-row apply).
+  - Call invalidate_cache() to force a reload (e.g. after new parquet files land).
+
 Public functions:
   get_office_pnl()              → Office-level P&L for location table (1D, 5D)
   get_sector_pnl(location)      → Sector-level P&L for sector breakdown (1D, 5D)
   get_product_pnl(location)     → Product-level P&L for product drill-down (1D, 5D)
   get_analyst_pnl(location)     → Analyst-level P&L for analyst tab (1D, 5D, YTD)
   get_analyst_product_pnl(analyst) → Product-level P&L for analyst detail panel (YTD)
+  invalidate_cache()            → Force reload of parquet files on next call
 """
 
 import pandas as pd
@@ -48,6 +56,20 @@ from data.reference import (
 _BASE        = Path(__file__).resolve().parent.parent / "data" / "hawk" / "raw"
 ANALYST_DIR  = _BASE / "analyst"
 PRODUCT_DIR  = _BASE / "product"
+
+# ── Module-level cache ────────────────────────────────────────────────────────
+# Loaded once on first use, reused for all subsequent calls.
+# Invalidate by calling invalidate_cache() or restarting the server.
+
+_ANALYST_DF: pd.DataFrame | None = None
+_PRODUCT_DF: pd.DataFrame | None = None
+
+
+def invalidate_cache():
+    """Force reload of parquet files on next function call."""
+    global _ANALYST_DF, _PRODUCT_DF
+    _ANALYST_DF = None
+    _PRODUCT_DF = None
 
 
 # ── Internal loaders ──────────────────────────────────────────────────────────
@@ -72,6 +94,55 @@ def _load_parquet(directory: Path) -> pd.DataFrame:
     return df
 
 
+def _get_analyst_df() -> pd.DataFrame:
+    """
+    Return the analyst parquet DataFrame, loading and caching on first call.
+    Excluded offices are filtered out at load time.
+    """
+    global _ANALYST_DF
+    if _ANALYST_DF is None:
+        df = _load_parquet(ANALYST_DIR)
+        _ANALYST_DF = df[~df["Office"].isin(EXCLUDED_OFFICES)].copy()
+    return _ANALYST_DF
+
+
+def _get_product_df() -> pd.DataFrame:
+    """
+    Return the product parquet DataFrame, loading and caching on first call.
+    Excluded offices are filtered and sector mapping is pre-computed
+    vectorised — avoiding the slow row-by-row apply() on 840k rows.
+    """
+    global _PRODUCT_DF
+    if _PRODUCT_DF is None:
+        df = _load_parquet(PRODUCT_DIR)
+        df = df[~df["Office"].isin(EXCLUDED_OFFICES)].copy()
+
+        # Vectorised sector mapping — build lookup Series then map, which is
+        # 10-100x faster than df.apply() with a Python lambda over 840k rows.
+        # hawk_sector() takes (AssetClass, SubAssetClass, Product) — we build
+        # a composite key and map it to a pre-built lookup dict.
+        unique_combos = df[["AssetClass", "SubAssetClass", "Product"]].drop_duplicates()
+        unique_combos["Sector"] = unique_combos.apply(
+            lambda r: hawk_sector(
+                r["AssetClass"]    or "",
+                r["SubAssetClass"] or "",
+                r["Product"]       or "",
+            ),
+            axis=1,
+        )
+        sector_map = unique_combos.set_index(
+            ["AssetClass", "SubAssetClass", "Product"]
+        )["Sector"]
+
+        df["Sector"] = df.set_index(
+            ["AssetClass", "SubAssetClass", "Product"]
+        ).index.map(sector_map)
+
+        _PRODUCT_DF = df[df["Sector"].notna()].copy()
+
+    return _PRODUCT_DF
+
+
 def _last_n_dates(df: pd.DataFrame, n: int) -> list:
     """Return the n most recent distinct ReportDates in the dataset."""
     return sorted(df["ReportDate"].unique(), reverse=True)[:n]
@@ -93,11 +164,10 @@ def get_office_pnl() -> pd.DataFrame:
         PnL_1D    — GrossPnL for most recent trading day
         PnL_5D    — cumulative GrossPnL over last 5 trading days
     """
-    df = _load_parquet(ANALYST_DIR)
-    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+    df = _get_analyst_df()
 
     last_5 = _last_n_dates(df, 5)
-    last_1  = last_5[:1]
+    last_1 = last_5[:1]
 
     if not last_5:
         return pd.DataFrame(columns=["Office", "PnL_1D", "PnL_5D"])
@@ -143,24 +213,13 @@ def get_sector_pnl(location: str = "Total") -> pd.DataFrame:
         PnL_1D    — GrossPnL for most recent trading day
         PnL_5D    — cumulative GrossPnL over last 5 trading days
     """
-    df = _load_parquet(PRODUCT_DIR)
-    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+    df = _get_product_df()
 
     if location != "Total":
         df = df[df["Office"] == location]
 
-    df["Sector"] = df.apply(
-        lambda r: hawk_sector(
-            r["AssetClass"] or "",
-            r["SubAssetClass"] or "",
-            r["Product"] or "",
-        ),
-        axis=1,
-    )
-    df = df[df["Sector"].notna()]
-
     last_5 = _last_n_dates(df, 5)
-    last_1  = last_5[:1]
+    last_1 = last_5[:1]
 
     if not last_5:
         return pd.DataFrame(columns=["Sector", "PnL_1D", "PnL_5D"])
@@ -185,6 +244,7 @@ def get_sector_pnl(location: str = "Total") -> pd.DataFrame:
 
 
 # ── Product P&L ───────────────────────────────────────────────────────────────
+
 def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.DataFrame:
     """
     Product-level P&L for the product drill-down table.
@@ -205,36 +265,20 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
     mapping to the same product name (e.g. RB1 + ICENYH → 'RBOB Gasoline')
     are summed automatically by the groupby.
     """
-    from data.reference import HAWK_PRODUCT_PNL_MAP
-
-    df = _load_parquet(PRODUCT_DIR)
-    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+    df = _get_product_df()
 
     if location != "Total":
         df = df[df["Office"] == location]
 
-    df["Sector"] = df.apply(
-        lambda r: hawk_sector(
-            r["AssetClass"] or "",
-            r["SubAssetClass"] or "",
-            r["Product"] or "",
-        ),
-        axis=1,
-    )
-    df = df[df["Sector"].notna()]
-
     if sector:
         df = df[df["Sector"] == sector]
 
-    # Translate HAWK ticker → ProductRisk product name. Tickers absent from
-    # the map are dropped (no ProductRisk row to join to anyway).
+    # Translate HAWK ticker → ProductRisk product name.
     df = df[df["Product"].isin(HAWK_PRODUCT_PNL_MAP)]
     if df.empty:
         return pd.DataFrame(columns=["Product", "ProductDesc", "Sector", "PnL_1D", "PnL_5D"])
 
     df = df.copy()
-    # Capture HAWK ProductDesc before overwriting Product, so we can surface
-    # the descriptive label alongside the canonical name.
     desc_map = (
         df[df["ProductDesc"].notna()]
         .groupby("Product")["ProductDesc"]
@@ -268,8 +312,6 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
 
     result = pnl_1d.merge(pnl_5d, on=["Product", "Sector"], how="outer")
 
-    # One ProductRisk name may now correspond to several HAWK tickers; pick
-    # the first non-null HAWK ProductDesc as the descriptor.
     rename_desc = (
         df[df["ProductDesc_HAWK"].notna()]
         .groupby("Product")["ProductDesc_HAWK"]
@@ -280,7 +322,7 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
 
     return result[["Product", "ProductDesc", "Sector", "PnL_1D", "PnL_5D"]]
 
-# ── Analyst P&L ───────────────────────────────────────────────────────────────
+
 # ── Analyst P&L ───────────────────────────────────────────────────────────────
 
 def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
@@ -296,38 +338,21 @@ def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
         PnL_1D    — GrossPnL for most recent trading day
         PnL_5D    — cumulative GrossPnL over last 5 trading days
         PnL_YTD   — cumulative NetPnL from Jan 1st of current year to today
-
-    Note: HAWK breaks P&L down per ITM (sub-account), not per PrimaryITM.
-    Sub-accounts like FIL3, FIL9 etc. each carry their own P&L on the
-    HAWK frontend, so we filter and group by ITM here. PrimaryITM is only
-    used for office/sector/product aggregations where we deliberately want
-    each trader counted once.
-
-    1D/5D use GrossPnL (matches what traders watch intraday).
-    YTD uses NetPnL — gross less commissions/fees/rebates — which is the
-    figure that matters for performance review and compensation.
     """
-    df = _load_parquet(ANALYST_DIR)
-    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+    df = _get_analyst_df()
 
     if location != "Total":
         df = df[df["Office"] == location]
 
-    last_5  = _last_n_dates(df, 5)
-    last_1  = last_5[:1]
+    last_5    = _last_n_dates(df, 5)
+    last_1    = last_5[:1]
     ytd_start = _ytd_start()
 
     if not last_5:
         return pd.DataFrame(columns=["Analyst", "Office", "PnL_1D", "PnL_5D", "PnL_YTD"])
 
     def _agg_analyst(date_filter=None, ytd=False, pnl_col=HAWK_ANALYST_PNL_COL) -> pd.DataFrame:
-        if ytd:
-            subset = df[df["ReportDate"] >= ytd_start]
-        else:
-            subset = df[df["ReportDate"].isin(date_filter)]
-
-        # Group by ITM — each sub-account is a distinct analyst row in
-        # the dashboard and joins to AnalystRisk.Analyst.
+        subset = df[df["ReportDate"] >= ytd_start] if ytd else df[df["ReportDate"].isin(date_filter)]
         return (
             subset
             .groupby(["ITM", "Office"], as_index=False)
@@ -347,7 +372,9 @@ def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
     result = result.rename(columns={"ITM": "Analyst"})
     return result[["Analyst", "Office", "PnL_1D", "PnL_5D", "PnL_YTD"]]
 
+
 # ── Analyst product P&L ───────────────────────────────────────────────────────
+
 def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     """
     Product-level YTD NetPnL for a single analyst's detail panel.
@@ -356,26 +383,12 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
         analyst: ITM code (e.g. 'FIL3', 'MRN')
 
     Returns:
-        Product   — ProductRisk product name (joins to AnalystTab product rows)
+        Product   — ProductRisk product name
         PnL_YTD   — cumulative NetPnL from Jan 1st of current year to today
-
-    Note: filters by ITM, not PrimaryITM. Each sub-account (e.g. FIL3 vs FIL9)
-    has its own distinct P&L in HAWK and should be queried independently.
-
-    Uses NetPnL (gross less commissions/fees/rebates) for consistency with
-    the YTD column on the analyst table — that's the figure that matters
-    for performance review and compensation.
-
-    Translates HAWK exchange codes → ProductRisk product names via
-    HAWK_PRODUCT_PNL_MAP so the frontend join with the product breakdown
-    table works. Multiple tickers mapping to the same name (e.g. BCO + BCOC
-    + BCOP → 'ICE Brent Crude') are summed.
     """
-    from data.reference import HAWK_PRODUCT_PNL_MAP
-
+    # Analyst product P&L is filtered by ITM so load raw parquet directly
+    # (module cache filters by excluded offices but not ITM).
     df = _load_parquet(PRODUCT_DIR)
-
-    # Filter to analyst by ITM — each sub-account has independent P&L.
     df = df[df["ITM"] == analyst]
 
     ytd_start = _ytd_start()
@@ -384,8 +397,6 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Product", "PnL_YTD"])
 
-    # Translate HAWK ticker → ProductRisk product name. Tickers absent from
-    # the map are dropped (no ProductRisk row to join to).
     df = df[df["Product"].isin(HAWK_PRODUCT_PNL_MAP)]
     if df.empty:
         return pd.DataFrame(columns=["Product", "PnL_YTD"])
@@ -403,26 +414,16 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
 
     return result[["Product", "PnL_YTD"]]
 
+
 # ── Roll Risk product P&L ─────────────────────────────────────────────────────
 
 def get_roll_product_pnl(location: str = "Total") -> pd.DataFrame:
     """
     Product-level P&L for the Roll Risk tab (Rates + Equities sectors).
-
-    Maps HAWK exchange codes → ProductRisk product names via
-    HAWK_ROLL_PRODUCT_MAP, then aggregates 1D and 5D P&L.
-    Multiple HAWK codes mapping to the same product name (e.g. TB + UBE →
-    'US Ultra Bond') are summed automatically by the groupby.
-
-    Returns:
-        Product  — ProductRisk product name (joins to db_rollview product rows)
-        PnL_1D   — GrossPnL for most recent trading day
-        PnL_5D   — cumulative GrossPnL over last 5 trading days
     """
     from data.reference import HAWK_ROLL_PRODUCT_MAP
 
-    df = _load_parquet(PRODUCT_DIR)
-    df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
+    df = _get_product_df()
 
     if location != "Total":
         df = df[df["Office"] == location]

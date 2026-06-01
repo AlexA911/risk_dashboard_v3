@@ -24,7 +24,8 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getFiGroupRisk, getFiRollRisk, getHawkRollPnl } from "../api/client";
+import { getFiGroupRisk, getFiRollRisk, getHawkRollPnl, getVixMargin, getMetrics } from "../api/client";
+import { calcUtilisation, utilisationColour } from "../utils/limitUtilisation";
 import VarMarginChart from "./VarMarginChart";
 
 // ─── Section colours ──────────────────────────────────────────────────────────
@@ -100,16 +101,23 @@ function deriveMetrics(sections) {
 
 // ─── Metric card ──────────────────────────────────────────────────────────────
 
-function RollMetricCard({ label, value, change, colour }) {
+function RollMetricCard({ label, value, change, colour, valueColour, vixLabel }) {
   return (
     <Card elevation={0} sx={{ borderRadius: 2, borderTop: `3px solid ${colour}`, boxShadow: "0 1px 3px rgba(0,0,0,0.06)", background: "#fff" }}>
       <CardContent sx={{ p: "12px 14px !important" }}>
         <Typography sx={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", mb: 0.5 }}>
           {label}
         </Typography>
-        <Typography sx={{ fontSize: 20, fontWeight: 700, color: "#0f172a", mb: 0.25 }}>
-          {value}
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.25 }}>
+          <Typography sx={{ fontSize: 20, fontWeight: 700, color: valueColour ?? "#0f172a" }}>
+            {value}
+          </Typography>
+          {vixLabel && (
+            <Typography sx={{ fontSize: 11, fontWeight: 600, color: "#64748b", whiteSpace: "nowrap" }}>
+              {vixLabel}
+            </Typography>
+          )}
+        </Box>
         {change
           ? <Typography sx={{ fontSize: 10, fontWeight: 500, color: change.up ? "#ef4444" : "#22c55e" }}>{change.text}</Typography>
           : <Typography sx={{ fontSize: 10 }}>&nbsp;</Typography>
@@ -121,7 +129,7 @@ function RollMetricCard({ label, value, change, colour }) {
 
 // ─── Metrics bar (adapts labels to current view) ──────────────────────────────
 
-function RollMetricsBar({ sections, view }) {
+function RollMetricsBar({ sections, view, vix, metrics }) {
   const { totals, bySection } = useMemo(() => deriveMetrics(sections), [sections]);
 
   const isRolls = view === "rolls";
@@ -132,14 +140,39 @@ function RollMetricsBar({ sections, view }) {
   const s1 = bySection[s1key] ?? {};
   const s2 = bySection[s2key] ?? {};
 
+  const vixCurrent   = vix?.vix_current ?? 0;
+  const vixSod       = vix?.vix_sod     ?? 0;
+  // Use OfficeRisk margin (same source as MetricsRow) — not section-derived margin
+  const utilRatio    = calcUtilisation(metrics?.margin_current, vixCurrent);
+  const utilSodRatio = calcUtilisation(metrics?.margin_sod,     vixSod);
+  const utilDelta    = utilRatio != null && utilSodRatio != null ? utilRatio - utilSodRatio : null;
+
+  function fmtPct(val) {
+    if (val == null || isNaN(val)) return "—";
+    return `${(val * 100).toFixed(1)}%`;
+  }
+  function fmtDeltaPct(delta) {
+    if (delta == null || isNaN(delta)) return null;
+    const up = delta >= 0;
+    return { text: `${up ? "▲" : "▼"} ${Math.abs(delta * 100).toFixed(1)}pp from SOD`, up };
+  }
+
   return (
-    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 1.5, mb: 2 }}>
+    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1.5, mb: 2 }}>
       <RollMetricCard label="Total Roll Margin"         value={fmtM(totals.margin)} change={fmtDeltaM(totals.marginDelta)} colour={TOTAL_COLOUR} />
       <RollMetricCard label={`${s1label} Margin`}       value={fmtM(s1.margin)}     change={fmtDeltaM(s1.marginDelta)}     colour={SECTION_COLOURS[s1key]} />
       <RollMetricCard label={`${s2label} Margin`}       value={fmtM(s2.margin)}     change={fmtDeltaM(s2.marginDelta)}     colour={SECTION_COLOURS[s2key]} />
       <RollMetricCard label="Total Roll VaR 100D"       value={fmtK(totals.var)}    change={fmtDeltaK(totals.varDelta)}    colour={TOTAL_COLOUR} />
       <RollMetricCard label={`${s1label} VaR 100D`}     value={fmtK(s1.var)}        change={fmtDeltaK(s1.varDelta)}        colour={SECTION_COLOURS[s1key]} />
       <RollMetricCard label={`${s2label} VaR 100D`}     value={fmtK(s2.var)}        change={fmtDeltaK(s2.varDelta)}        colour={SECTION_COLOURS[s2key]} />
+      <RollMetricCard
+        label="Limit Utilisation"
+        value={fmtPct(utilRatio)}
+        change={fmtDeltaPct(utilDelta)}
+        colour="#8b5cf6"
+        valueColour={utilisationColour(utilRatio)}
+        vixLabel={vixCurrent ? `VIX IM: ${fmtM(vixCurrent)}` : null}
+      />
     </Box>
   );
 }
@@ -396,6 +429,8 @@ export default function RollRiskTab({ location, refreshKey }) {
   const [errorRolls,      setErrorRolls]      = useState(null);
   const [varMode,         setVarMode]         = useState("100D");
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [vix,             setVix]             = useState(null);
+  const [metrics,         setMetrics]         = useState(null);
 
   const colourSections = (data, colourMap) =>
     (data || []).map(sec => ({
@@ -421,27 +456,31 @@ export default function RollRiskTab({ location, refreshKey }) {
       })),
     }));
 
-  // Fetch Risk view + P&L in parallel
+  // Fetch Risk view + P&L + VIX + metrics in parallel
   useEffect(() => {
     setLoadingRisk(true); setErrorRisk(null);
-    Promise.all([getFiGroupRisk(location), getHawkRollPnl()])
-      .then(([riskRes, pnlRes]) => {
+    Promise.all([getFiGroupRisk(location), getHawkRollPnl(), getVixMargin(), getMetrics(location, 95.0, 100)])
+      .then(([riskRes, pnlRes, vixRes, metricsRes]) => {
         const pnlMap   = buildPnlMap(pnlRes.data.data || []);
         const sections = colourSections(riskRes.data.sections, SECTION_COLOURS);
         setRiskSections(mergePnl(sections, pnlMap));
+        setVix(vixRes);
+        setMetrics(metricsRes.data);
         setLoadingRisk(false);
       })
       .catch(e => { setErrorRisk(e.message); setLoadingRisk(false); });
   }, [location, refreshKey]);
 
-  // Fetch Rolls view + P&L in parallel
+  // Fetch Rolls view + P&L + VIX + metrics in parallel
   useEffect(() => {
     setLoadingRolls(true); setErrorRolls(null);
-    Promise.all([getFiRollRisk(location), getHawkRollPnl()])
-      .then(([rollsRes, pnlRes]) => {
+    Promise.all([getFiRollRisk(location), getHawkRollPnl(), getVixMargin(), getMetrics(location, 95.0, 100)])
+      .then(([rollsRes, pnlRes, vixRes, metricsRes]) => {
         const pnlMap   = buildPnlMap(pnlRes.data.data || []);
         const sections = colourSections(rollsRes.data.sections, SECTION_COLOURS);
         setRollsSections(mergePnl(sections, pnlMap));
+        setVix(vixRes);
+        setMetrics(metricsRes.data);
         setLoadingRolls(false);
       })
       .catch(e => { setErrorRolls(e.message); setLoadingRolls(false); });
@@ -459,7 +498,7 @@ export default function RollRiskTab({ location, refreshKey }) {
     <Box sx={{ display: "flex", flexDirection: "column", gap: 0 }}>
 
       {/* ── Metrics bar ── */}
-      {!loading && !error && <RollMetricsBar sections={sections} view={view} />}
+      {!loading && !error && <RollMetricsBar sections={sections} view={view} vix={vix} metrics={metrics} />}
 
       {/* ── Toolbar ── */}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5 }}>
