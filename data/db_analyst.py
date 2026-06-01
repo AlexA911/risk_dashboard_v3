@@ -182,17 +182,58 @@ def get_analyst_chart(analyst: str, office: str, confidence: float,
 # ─────────────────────────────────────────────────────────────────────────────
 # Analyst product breakdown
 # ─────────────────────────────────────────────────────────────────────────────
-
 def get_analyst_products(analyst: str, office: str, confidence: float,
                          lookback: int) -> pd.DataFrame:
     """
-    Latest iVaR breakdown by product for a single analyst.
-    Uses ProductRisk WHERE Analyst != Office (analyst-level rows only —
-    excludes netting group rows where Analyst = Office).
+    Latest iVaR breakdown by product for a single analyst, with subgroup
+    header rows interleaved between products.
 
-    Returns columns: Asset_Class, Product, iVaR, Margin,
-                     Delta_iVaR (vs last EOD), Delta_iVaR_t1 (vs t-1 EOD)
+    Uses ProductRisk WHERE Analyst != Office (analyst-level rows only —
+    excludes office-level netting group rows where Analyst = Office).
+
+    At the analyst level, Cumulus writes two flavours of rows:
+
+      * Product rows — `Product` is a specific instrument
+        (e.g. 'ICE Brent Crude', 'Cocoa (Liffe)').
+      * Netting rows — `Product` is an asset class name
+        (e.g. 'Cocoa', 'NG', 'Oils - Refined'). These hold the netted
+        iVaR / Margin for that asset class as a whole at the analyst level.
+
+    We use the netting rows as the *headline* values on each subgroup
+    header (so the COCOA header shows the netted Cocoa figure, not the
+    sum of Cocoa (Liffe) + Cocoa (ICE US) which would double-count and
+    miss netting offsets). Products listed underneath are the individual
+    instruments that contribute to that netted figure.
+
+    Returns columns:
+      _rowType      — "subgroup" for header rows, "product" for product rows
+      _subgroup     — subgroup name (set on both header and product rows
+                      so the frontend can group visually)
+      _sector       — sector name
+      Asset_Class, Product, iVaR, Margin,
+      Delta_iVaR (vs last EOD), Delta_iVaR_t1 (vs t-1 EOD)
+
+    Subgroups with no netting row at the analyst level show "—" on the
+    header values (frontend renders null as "—").
+
+    Truly orphan products (not in PRODUCT_SUBGROUP, not a netting row)
+    are grouped under a synthetic "Other" subgroup at the end of their
+    sector, with no header values.
     """
+    from data.reference import (
+        PRODUCT_SUBGROUP, SUBGROUP_ORDER, SUBGROUP_NETTED_ASSET_CLASSES,
+        SECTOR_MAP, sort_sectors,
+    )
+
+    # Build reverse lookup once: netting-row Product name → subgroup name.
+    # e.g. {"Cocoa": "Cocoa", "NG": "Natural Gas", "Oils - Refined": "Oil Refined", ...}
+    # Subgroups with empty asset-class lists (e.g. "Power & Carbon": []) are
+    # naturally skipped.
+    netting_product_to_subgroup = {}
+    for subgroup, asset_classes in SUBGROUP_NETTED_ASSET_CLASSES.items():
+        for ac in asset_classes:
+            netting_product_to_subgroup[ac] = subgroup
+
     dc = date_context()
 
     def fetch_eod(date):
@@ -239,16 +280,16 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
             return pd.read_sql(query, conn,
                                params=[dc.today_str, analyst, office, confidence, lookback])
 
-    sod  = fetch_eod(dc.last_night_95)
-    t1_  = fetch_eod(dc.t1_95)
-    cur  = fetch_intraday()
+    sod = fetch_eod(dc.last_night_95)
+    t1_ = fetch_eod(dc.t1_95)
+    cur = fetch_intraday()
 
     if cur.empty: cur = sod.copy()
 
     keys = ["Product", "Asset_Class"]
-    sod  = sod.rename(columns={"iVaR": "_ivar_sod", "Margin": "_margin_sod"})
-    t1_  = t1_.rename(columns={"iVaR": "_ivar_t1",  "Margin": "_margin_t1"})
-    cur  = cur.rename(columns={"iVaR": "_ivar_cur",  "Margin": "_margin_cur"})
+    sod = sod.rename(columns={"iVaR": "_ivar_sod", "Margin": "_margin_sod"})
+    t1_ = t1_.rename(columns={"iVaR": "_ivar_t1",  "Margin": "_margin_t1"})
+    cur = cur.rename(columns={"iVaR": "_ivar_cur", "Margin": "_margin_cur"})
 
     df = (
         cur[keys + ["_ivar_cur", "_margin_cur"]]
@@ -261,12 +302,113 @@ def get_analyst_products(analyst: str, office: str, confidence: float,
     df["Delta_iVaR_t1"] = df["_ivar_cur"] - df["_ivar_t1"]
     df["Margin"]        = df["_margin_cur"]
 
-    return (
-        df[keys + ["iVaR", "Delta_iVaR", "Delta_iVaR_t1", "Margin"]]
-        .sort_values("iVaR", ascending=False, key=abs)
-        .reset_index(drop=True)
-    )
+    all_rows = df[keys + ["iVaR", "Delta_iVaR", "Delta_iVaR_t1", "Margin"]].copy()
+    if all_rows.empty:
+        return pd.DataFrame(columns=[
+            "_rowType", "_subgroup", "_sector",
+            "Product", "Asset_Class",
+            "iVaR", "Delta_iVaR", "Delta_iVaR_t1", "Margin",
+        ])
 
+    # ── Split rows: netting rows vs true product rows ─────────────────────
+    is_netting = all_rows["Product"].isin(netting_product_to_subgroup)
+
+    netting = all_rows[is_netting].copy()
+    products = all_rows[~is_netting].copy()
+
+    # Map netting rows by subgroup name. If duplicates somehow appear,
+    # keep the first.
+    netting["_subgroup"] = netting["Product"].map(netting_product_to_subgroup)
+    netting_by_subgroup = {row["_subgroup"]: row for _, row in netting.iterrows()}
+
+    # Assign each product row to a subgroup and sector
+    products["_subgroup"] = products["Product"].map(PRODUCT_SUBGROUP).fillna("Other")
+    products["_sector"]   = products["Asset_Class"].map(SECTOR_MAP).fillna("Other")
+
+    # ── Build ordered output ──────────────────────────────────────────────
+    rows = []
+
+    # All sectors present across both products AND netting headers.
+    # A subgroup might have a netting row but no product rows for this
+    # analyst, or vice versa — show it either way.
+    sectors_with_products = set(products["_sector"].unique())
+    sectors_with_netting  = {
+        SECTOR_MAP.get(ac, "Other")
+        for ac in netting["Product"].tolist()
+    }
+    sectors_present = sort_sectors(list(sectors_with_products | sectors_with_netting))
+
+    for sector in sectors_present:
+        sector_products = products[products["_sector"] == sector]
+
+        # Subgroups present in this sector — from product rows AND
+        # from netting rows whose mapped asset class belongs to this sector
+        subgroups_from_products = set(sector_products["_subgroup"].unique())
+        subgroups_from_netting = {
+            sg for sg, row in netting_by_subgroup.items()
+            if SECTOR_MAP.get(row["Product"], "Other") == sector
+        }
+        present = subgroups_from_products | subgroups_from_netting
+
+        # Order: known subgroups in SUBGROUP_ORDER first, then leftovers
+        # alphabetically, then "Other" last
+        sector_order = SUBGROUP_ORDER.get(sector, [])
+        ordered = [s for s in sector_order if s in present]
+        leftover = sorted(s for s in present if s not in sector_order and s != "Other")
+        if "Other" in present:
+            leftover.append("Other")
+        ordered.extend(leftover)
+
+        for subgroup in ordered:
+            subgroup_products = sector_products[sector_products["_subgroup"] == subgroup]
+            netting_row = netting_by_subgroup.get(subgroup)
+
+            # Skip subgroups with neither header nor products (shouldn't happen
+            # given the union above, but defensive)
+            if subgroup_products.empty and netting_row is None:
+                continue
+
+            # Header row — netted values when available, else None
+            if netting_row is not None:
+                rows.append({
+                    "_rowType":      "subgroup",
+                    "_subgroup":     subgroup,
+                    "_sector":       sector,
+                    "Product":       subgroup,
+                    "Asset_Class":   None,
+                    "iVaR":          netting_row["iVaR"],
+                    "Delta_iVaR":    netting_row["Delta_iVaR"],
+                    "Delta_iVaR_t1": netting_row["Delta_iVaR_t1"],
+                    "Margin":        netting_row["Margin"],
+                })
+            else:
+                rows.append({
+                    "_rowType":      "subgroup",
+                    "_subgroup":     subgroup,
+                    "_sector":       sector,
+                    "Product":       subgroup,
+                    "Asset_Class":   None,
+                    "iVaR":          None,
+                    "Delta_iVaR":    None,
+                    "Delta_iVaR_t1": None,
+                    "Margin":        None,
+                })
+
+            # Product rows, sorted by absolute iVaR
+            for _, p in subgroup_products.sort_values("iVaR", ascending=False, key=abs).iterrows():
+                rows.append({
+                    "_rowType":      "product",
+                    "_subgroup":     subgroup,
+                    "_sector":       sector,
+                    "Product":       p["Product"],
+                    "Asset_Class":   p["Asset_Class"],
+                    "iVaR":          p["iVaR"],
+                    "Delta_iVaR":    p["Delta_iVaR"],
+                    "Delta_iVaR_t1": p["Delta_iVaR_t1"],
+                    "Margin":        p["Margin"],
+                })
+
+    return pd.DataFrame(rows)
 
 def get_analyst_product_chart(analyst: str, office: str, product: str,
                                confidence: float, lookback: int,

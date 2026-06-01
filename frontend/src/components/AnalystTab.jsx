@@ -4,9 +4,21 @@
  * Clicking a product row switches the VaR chart to that product's iVaR history.
  * Axis labels auto-scale: raw / K / M depending on data magnitude.
  *
- * P&L columns (1D Gross, 5D Cumulative, YTD) sourced from HAWK parquet cache
- * via /api/hawk-analyst-pnl. Fetched in parallel with VaR and merged by Analyst.
- * Product breakdown includes YTD P&L from /api/hawk-analyst-product-pnl.
+ * Left table P&L columns (1D Gross, 5D Cumulative, Net YTD) sourced from HAWK
+ * parquet cache via /api/hawk-analyst-pnl. Merged with VaR data by Analyst.
+ *
+ * Right panel product breakdown:
+ *   - /api/analyst-products returns product rows interleaved with subgroup
+ *     headers (_rowType: "subgroup"), grouped by sector then subgroup.
+ *   - /api/hawk-analyst-product-pnl provides per-product YTD P&L.
+ *   - Header rows have their YTD P&L summed client-side from the products
+ *     beneath them (header rows aren't in HAWK directly).
+ *   - Pinned bottom Total row sums Margin and YTD across products.
+ *
+ * Note: product breakdown YTD column shows Gross-equivalent figures
+ * (PnL + VariationMargin), not Net — see db_hawk.get_analyst_product_pnl
+ * for why. The analyst-level Net YTD on the left is the trader's true
+ * bottom line; the right-panel breakdown is gross attribution per product.
  */
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { AgGridReact } from "ag-grid-react";
@@ -35,6 +47,21 @@ const NAVBAR_HEIGHT = 48;
 const PAGE_PAD      = 32;
 const PANEL_HEIGHT  = `calc(100vh - ${NAVBAR_HEIGHT + PAGE_PAD}px)`;
 
+// Sector colour palette — mirrors LocationTableAG so the same sector has the
+// same colour across the dashboard.
+const SECTOR_COLOURS = {
+  "Energy":     "#f97316",
+  "Rates":      "#3b82f6",
+  "Equities":   "#ec4899",
+  "Volatility": "#8b5cf6",
+  "FX":         "#10b981",
+  "Softs":      "#eab308",
+  "Ags":        "#84cc16",
+  "Metals":     "#64748b",
+  "Crypto":     "#06b6d4",
+  "Other":      "#94a3b8",
+};
+
 // ─── Smart axis formatter ─────────────────────────────────────────────────────
 
 function makeFormatter(data, key) {
@@ -62,9 +89,18 @@ function AnalystNameRenderer({ value, data }) {
   );
 }
 
-function NumRenderer({ value }) {
+function NumRenderer({ value, data }) {
+  // Subgroup header rows: dash for null numeric values
+  if (data?._rowType === "subgroup" && (value === null || value === undefined)) {
+    return <span style={{ color: "#94a3b8" }}>—</span>;
+  }
   if (value === null || value === undefined) return <span style={{ color: "#94a3b8" }}>—</span>;
-  return <span>{Math.round(Math.abs(value)).toLocaleString("en-GB")}</span>;
+  const bold = data?._rowType === "subgroup" || data?._isTotal;
+  return (
+    <span style={{ fontWeight: bold ? 700 : 400 }}>
+      {Math.round(Math.abs(value)).toLocaleString("en-GB")}
+    </span>
+  );
 }
 
 function VaRRenderer({ value, data }) {
@@ -78,7 +114,10 @@ function VaRRenderer({ value, data }) {
   );
 }
 
-function DeltaRenderer({ value }) {
+function DeltaRenderer({ value, data }) {
+  if (data?._rowType === "subgroup" && (value === null || value === undefined)) {
+    return <span style={{ color: "#94a3b8" }}>—</span>;
+  }
   if (value === null || value === undefined || value === "") return <span style={{ color: "#94a3b8" }}>—</span>;
   const up = value >= 0;
   return (
@@ -88,11 +127,15 @@ function DeltaRenderer({ value }) {
   );
 }
 
-function PnlRenderer({ value }) {
+function PnlRenderer({ value, data }) {
   if (value === null || value === undefined) return <span style={{ color: "#94a3b8" }}>—</span>;
   const positive = value >= 0;
+  const bold = data?._rowType === "subgroup" || data?._isTotal;
   return (
-    <span style={{ color: positive ? "#22c55e" : "#ef4444", fontWeight: 500 }}>
+    <span style={{
+      color: positive ? "#22c55e" : "#ef4444",
+      fontWeight: bold ? 700 : 500,
+    }}>
       {positive ? "" : "-"}{Math.abs(Math.round(value)).toLocaleString("en-GB")}
     </span>
   );
@@ -141,23 +184,54 @@ function buildProductCols(onProductClick, selectedProduct) {
   return [
     {
       field: "Product", headerName: "Product",
-      cellRenderer: ({ value, data }) => (
-        <Box sx={{ pl: 1, cursor: "pointer" }}>
-          <span style={{
-            color: selectedProduct === value ? "#3b82f6" : "#334155",
-            fontSize: 11,
-            fontWeight: selectedProduct === value ? 600 : 400,
-          }}>{value}</span>
-          {data?.Asset_Class && (
-            <span style={{ color: "#94a3b8", marginLeft: 6, fontSize: 10 }}>{data.Asset_Class}</span>
-          )}
-        </Box>
-      ),
-      flex: 2, minWidth: 160,
+      cellRenderer: ({ value, data }) => {
+        // Pinned bottom Total row
+        if (data?._isTotal) {
+          return (
+            <Box sx={{ pl: 1 }}>
+              <span style={{ color: "#0f172a", fontSize: 11, fontWeight: 700 }}>{value}</span>
+            </Box>
+          );
+        }
+        // Subgroup header row
+        if (data?._rowType === "subgroup") {
+          const colour = data?._sectorColour ?? "#94a3b8";
+          return (
+            <Box sx={{ pl: 1 }}>
+              <span style={{
+                color: colour,
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+              }}>{value}</span>
+            </Box>
+          );
+        }
+        // Product row
+        return (
+          <Box sx={{ pl: 3, cursor: "pointer" }}>
+            <span style={{ color: (data?._sectorColour ?? "#94a3b8"), marginRight: 6 }}>└</span>
+            <span style={{
+              color: selectedProduct === value ? "#3b82f6" : "#334155",
+              fontSize: 11,
+              fontWeight: selectedProduct === value ? 600 : 400,
+            }}>{value}</span>
+            {data?.Asset_Class && (
+              <span style={{ color: "#94a3b8", marginLeft: 6, fontSize: 10 }}>{data.Asset_Class}</span>
+            )}
+          </Box>
+        );
+      },
+      flex: 2, minWidth: 200,
       cellStyle: { display: "flex", alignItems: "center" },
-      onCellClicked: ({ data }) => onProductClick(data?.Product),
+      onCellClicked: ({ data }) => {
+        if (data?._isTotal) return;
+        if (data?._rowType === "subgroup") return;
+        onProductClick(data?.Product);
+      },
     },
-    { field: "iVaR",          headerName: "iVaR",   cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn", sort: "desc" },
+    { field: "iVaR",          headerName: "iVaR",   cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn" },
     { field: "Delta_iVaR",    headerName: "Δ SOD",  cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
     { field: "Delta_iVaR_t1", headerName: "Δ t-1",  cellRenderer: DeltaRenderer, flex: 1, minWidth: 70, type: "numericColumn" },
     { field: "Margin",        headerName: "Margin", cellRenderer: NumRenderer,   flex: 1, minWidth: 70, type: "numericColumn" },
@@ -291,7 +365,6 @@ function AnalystDetail({ analyst, office, varMode }) {
   const [selectedProduct, setSelectedProduct]  = useState(null);
   const [productChart,    setProductChart]     = useState([]);
   const [prodChartLoad,   setProdChartLoad]    = useState(false);
-  const [productPnl,      setProductPnl]       = useState({});
 
   const confidence = varMode === "100D" ? 95.0 : 100.0;
   const lookback   = varMode === "100D" ? 100  : 10;
@@ -305,7 +378,7 @@ function AnalystDetail({ analyst, office, varMode }) {
       .catch(() => setChartLoading(false));
   }, [analyst, office, confidence, lookback, chartDays]);
 
-  // Product list + YTD P&L (fetched in parallel)
+  // Product list (subgroup-grouped) + YTD P&L (fetched in parallel)
   useEffect(() => {
     setProdLoading(true);
     setSelectedProduct(null);
@@ -319,15 +392,33 @@ function AnalystDetail({ analyst, office, varMode }) {
 
         // Build lookup: Product → PnL_YTD
         const pnlMap = {};
-        for (const row of pnlRows) {
-          pnlMap[row.Product] = row.PnL_YTD;
-        }
+        for (const row of pnlRows) pnlMap[row.Product] = row.PnL_YTD;
 
-        // Merge YTD P&L into product rows
+        // First pass: merge per-product YTD and assign sector colour
         const merged = varRows.map(row => ({
           ...row,
-          _pnlytd: pnlMap[row.Product] ?? null,
+          _sectorColour: SECTOR_COLOURS[row._sector] ?? "#94a3b8",
+          _pnlytd: row._rowType === "product"
+            ? (pnlMap[row.Product] ?? null)
+            : null,  // subgroup headers populated in pass 2
         }));
+
+        // Second pass: populate subgroup header YTD as sum of products beneath.
+        // Headers and products arrive in order from the backend, so we walk
+        // forward from each header until the next header / end of array.
+        for (let i = 0; i < merged.length; i++) {
+          if (merged[i]._rowType !== "subgroup") continue;
+          let sum = 0;
+          let hasAny = false;
+          for (let j = i + 1; j < merged.length; j++) {
+            if (merged[j]._rowType === "subgroup") break;
+            if (typeof merged[j]._pnlytd === "number") {
+              sum += merged[j]._pnlytd;
+              hasAny = true;
+            }
+          }
+          merged[i]._pnlytd = hasAny ? sum : null;
+        }
 
         setProducts(merged);
         setProdLoading(false);
@@ -352,6 +443,26 @@ function AnalystDetail({ analyst, office, varMode }) {
     () => buildProductCols(handleProductClick, selectedProduct),
     [handleProductClick, selectedProduct]
   );
+
+  // Pinned bottom Total row — sums across PRODUCT rows only (excludes
+  // subgroup headers to avoid double-counting). Same caveat as before:
+  // iVaR is incremental so we leave it null; Margin and YTD sum cleanly.
+  const totalRow = useMemo(() => {
+    const productRows = products.filter(r => r._rowType === "product");
+    if (!productRows.length) return null;
+    const sumOf = (key) => productRows.reduce(
+      (acc, r) => acc + (typeof r[key] === "number" ? r[key] : 0), 0
+    );
+    return {
+      Product:       "Total",
+      iVaR:          null,
+      Delta_iVaR:    null,
+      Delta_iVaR_t1: null,
+      Margin:        sumOf("Margin"),
+      _pnlytd:       sumOf("_pnlytd"),
+      _isTotal:      true,
+    };
+  }, [products]);
 
   // Which data drives the VaR chart
   const varChartData    = selectedProduct ? productChart : analystChart;
@@ -415,7 +526,7 @@ function AnalystDetail({ analyst, office, varMode }) {
           Product Breakdown
           <Typography component="span" sx={{ fontSize: 10, color: "#94a3b8", ml: 1,
             fontWeight: 400, textTransform: "none" }}>
-            — click a row to drill into its chart
+            — click a product to drill into its chart
           </Typography>
         </Typography>
 
@@ -431,17 +542,43 @@ function AnalystDetail({ analyst, office, varMode }) {
             <AgGridReact
               theme="legacy"
               rowData={products}
+              pinnedBottomRowData={totalRow ? [totalRow] : undefined}
               columnDefs={productCols}
               defaultColDef={DEFAULT_COL}
               domLayout="autoHeight"
               suppressCellFocus
               suppressHorizontalScroll
               headerHeight={28}
-              getRowStyle={({ data: row }) => ({
-                background: selectedProduct === row?.Product ? "#eff6ff" : "#fff",
-                cursor: "pointer",
-                borderLeft: selectedProduct === row?.Product ? "2px solid #3b82f6" : "2px solid transparent",
-              })}
+              getRowStyle={({ data: row, node }) => {
+                // Pinned bottom Total row
+                if (node?.rowPinned === "bottom" || row?._isTotal) {
+                  return {
+                    background: "#f8fafc",
+                    borderTop:  "2px solid #cbd5e1",
+                    fontWeight: 700,
+                    cursor:     "default",
+                  };
+                }
+                // Subgroup header row
+                if (row?._rowType === "subgroup") {
+                  const colour = row?._sectorColour ?? "#94a3b8";
+                  return {
+                    background:   `${colour}14`,
+                    borderLeft:   `3px solid ${colour}`,
+                    borderBottom: `1px solid ${colour}30`,
+                    cursor:       "default",
+                  };
+                }
+                // Product row
+                const colour = row?._sectorColour ?? "#94a3b8";
+                return {
+                  background: selectedProduct === row?.Product ? "#eff6ff" : "#fff",
+                  cursor:     "pointer",
+                  borderLeft: selectedProduct === row?.Product
+                    ? "3px solid #3b82f6"
+                    : `3px solid ${colour}40`,
+                };
+              }}
             />
           </Box>
         )}

@@ -19,7 +19,6 @@ import { getLocations } from "../api/client";
 const NAV_ITEMS = [
   "Summary",
   "Roll Risk",
-  "Location",
   "Analyst",
   "Positions",
   "Stress",

@@ -348,20 +348,23 @@ def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
     return result[["Analyst", "Office", "PnL_1D", "PnL_5D", "PnL_YTD"]]
 
 # ── Analyst product P&L ───────────────────────────────────────────────────────
-
 def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     """
-    Product-level YTD GrossPnL for a single analyst's detail panel.
+    Product-level YTD NetPnL for a single analyst's detail panel.
 
     Args:
         analyst: ITM code (e.g. 'FIL3', 'MRN')
 
     Returns:
         Product   — ProductRisk product name (joins to AnalystTab product rows)
-        PnL_YTD   — cumulative GrossPnL from Jan 1st of current year to today
+        PnL_YTD   — cumulative NetPnL from Jan 1st of current year to today
 
     Note: filters by ITM, not PrimaryITM. Each sub-account (e.g. FIL3 vs FIL9)
     has its own distinct P&L in HAWK and should be queried independently.
+
+    Uses NetPnL (gross less commissions/fees/rebates) for consistency with
+    the YTD column on the analyst table — that's the figure that matters
+    for performance review and compensation.
 
     Translates HAWK exchange codes → ProductRisk product names via
     HAWK_PRODUCT_PNL_MAP so the frontend join with the product breakdown
@@ -393,7 +396,7 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     result = (
         df
         .groupby("Product", as_index=False)
-        .agg(PnL_YTD=(HAWK_PRODUCT_PNL_COL, "sum"))
+        .agg(PnL_YTD=("NetPnL", "sum"))
         .sort_values("PnL_YTD", ascending=False, key=abs)
         .reset_index(drop=True)
     )
