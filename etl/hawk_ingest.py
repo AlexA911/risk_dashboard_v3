@@ -1,6 +1,6 @@
 """
 HAWK Ingest
-Three modes:
+Four modes:
   --backfill     One-off historical pull from 2024-06-01 → today.
                  Writes a single history.parquet per table.
                  Errors if history.parquet already exists.
@@ -9,14 +9,21 @@ Three modes:
                  Use when LCY-SQL3 corrections have been applied to
                  historical data and the cache needs refreshing.
 
-  --daily        Pulls yesterday's data only.
+  --daily        Pulls the last trading day's data.
+                 Skips weekends — Mon morning pulls Friday, not Sunday.
                  Writes a dated parquet file alongside history.parquet.
                  Scheduled to run at 5am every weekday.
+
+  --date YYYY-MM-DD
+                 Pulls a specific date's data. Use to backfill a missed
+                 day or re-pull a single date. Errors if a file for that
+                 date already exists — delete it first to overwrite.
 
 Usage:
   python etl/hawk_ingest.py --backfill
   python etl/hawk_ingest.py --rebackfill
   python etl/hawk_ingest.py --daily
+  python etl/hawk_ingest.py --date 2026-05-29
 
 Notes:
   - All queries use (NOLOCK) to match HAWK frontend figures.
@@ -25,6 +32,9 @@ Notes:
     to avoid pyarrow schema conflicts when all values are NULL on a given day.
   - LCY-SQL3 is the primary/authoritative source. Corrections applied to
     historical rows require --rebackfill to refresh the cache.
+  - Bank holidays are not handled — a --daily run on a Tuesday after a
+    Monday bank holiday will pull an empty Monday. Use --date to fetch
+    the previous Friday explicitly if needed.
 
 Location: risk_dashboard_v3/etl/hawk_ingest.py
 """
@@ -56,6 +66,21 @@ PRODUCT_NULLABLE_COLS = [
     "VolumeRebates", "ExchangeRebates",
 ]
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def last_trading_day(reference: date) -> date:
+    """
+    Return the last weekday strictly before `reference`.
+    Mon → previous Friday. Tue–Fri → previous day. Weekends → previous Friday.
+    Does not account for bank holidays.
+    """
+    d = reference - timedelta(days=1)
+    while d.weekday() >= 5:   # 5 = Sat, 6 = Sun
+        d -= timedelta(days=1)
+    return d
+
+
 # ── Mode ──────────────────────────────────────────────────────────────────────
 
 if "--rebackfill" in sys.argv:
@@ -74,19 +99,38 @@ elif "--backfill" in sys.argv:
 
 elif "--daily" in sys.argv:
     MODE        = "daily"
-    YESTERDAY   = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    START_DATE  = YESTERDAY
-    END_DATE    = YESTERDAY
-    ANALYST_OUT = ANALYST_DIR / f"{YESTERDAY}.parquet"
-    PRODUCT_OUT = PRODUCT_DIR / f"{YESTERDAY}.parquet"
+    TARGET      = last_trading_day(date.today()).strftime("%Y-%m-%d")
+    START_DATE  = TARGET
+    END_DATE    = TARGET
+    ANALYST_OUT = ANALYST_DIR / f"{TARGET}.parquet"
+    PRODUCT_OUT = PRODUCT_DIR / f"{TARGET}.parquet"
+
+elif "--date" in sys.argv:
+    MODE        = "date"
+    idx         = sys.argv.index("--date")
+    if idx + 1 >= len(sys.argv):
+        print("ERROR: --date requires a YYYY-MM-DD argument.")
+        sys.exit(1)
+    TARGET = sys.argv[idx + 1]
+    try:
+        date.fromisoformat(TARGET)
+    except ValueError:
+        print(f"ERROR: '{TARGET}' is not a valid YYYY-MM-DD date.")
+        sys.exit(1)
+    START_DATE  = TARGET
+    END_DATE    = TARGET
+    ANALYST_OUT = ANALYST_DIR / f"{TARGET}.parquet"
+    PRODUCT_OUT = PRODUCT_DIR / f"{TARGET}.parquet"
 
 else:
     print("ERROR: No mode specified.")
     print("Usage:")
-    print("  python etl/hawk_ingest.py --backfill      (one-off historical pull)")
-    print("  python etl/hawk_ingest.py --rebackfill    (re-pull full history, overwrites)")
-    print("  python etl/hawk_ingest.py --daily         (yesterday's data only)")
+    print("  python etl/hawk_ingest.py --backfill            (one-off historical pull)")
+    print("  python etl/hawk_ingest.py --rebackfill          (re-pull full history, overwrites)")
+    print("  python etl/hawk_ingest.py --daily               (last trading day's data)")
+    print("  python etl/hawk_ingest.py --date YYYY-MM-DD     (specific date)")
     sys.exit(1)
+
 
 # ── Guards ────────────────────────────────────────────────────────────────────
 
@@ -96,13 +140,14 @@ if MODE == "backfill":
         print("Use --rebackfill to overwrite, or --daily for incremental updates.")
         sys.exit(1)
 
-if MODE == "daily":
+if MODE in ("daily", "date"):
     if ANALYST_OUT.exists() or PRODUCT_OUT.exists():
-        print(f"ERROR: {YESTERDAY}.parquet already exists.")
-        print("Daily ingest for this date has already run.")
+        print(f"ERROR: {ANALYST_OUT.name} already exists.")
+        print(f"Delete the file(s) manually if you intend to re-pull this date.")
         sys.exit(1)
 
 # rebackfill has no guard — intentionally overwrites
+
 
 # ── Connection ────────────────────────────────────────────────────────────────
 
@@ -120,6 +165,7 @@ conn = pyodbc.connect(
 )
 
 print("Connected.\n")
+
 
 # ── Pull analyst transactions ─────────────────────────────────────────────────
 
@@ -169,9 +215,13 @@ for col in ANALYST_NULLABLE_COLS:
         df_analyst[col] = df_analyst[col].astype("float64")
 
 print(f"Rows pulled:       {len(df_analyst):,}")
-print(f"Date range:        {df_analyst['ReportDate'].min().date()} → {df_analyst['ReportDate'].max().date()}")
-print(f"Unique analysts:   {df_analyst['PrimaryITM'].nunique()}")
-print(f"GrossPnL total:    {df_analyst['GrossPnL'].sum():,.0f}")
+if len(df_analyst) > 0:
+    print(f"Date range:        {df_analyst['ReportDate'].min().date()} → {df_analyst['ReportDate'].max().date()}")
+    print(f"Unique analysts:   {df_analyst['PrimaryITM'].nunique()}")
+    print(f"GrossPnL total:    {df_analyst['GrossPnL'].sum():,.0f}")
+else:
+    print("WARNING: No rows returned for this date range.")
+
 
 # ── Pull product transactions ─────────────────────────────────────────────────
 
@@ -227,15 +277,20 @@ for col in PRODUCT_NULLABLE_COLS:
         df_product[col] = df_product[col].astype("float64")
 
 print(f"Rows pulled:       {len(df_product):,}")
-print(f"Date range:        {df_product['ReportDate'].min().date()} → {df_product['ReportDate'].max().date()}")
-print(f"Unique analysts:   {df_product['PrimaryITM'].nunique()}")
-print(f"Unique products:   {df_product['Product'].nunique()}")
+if len(df_product) > 0:
+    print(f"Date range:        {df_product['ReportDate'].min().date()} → {df_product['ReportDate'].max().date()}")
+    print(f"Unique analysts:   {df_product['PrimaryITM'].nunique()}")
+    print(f"Unique products:   {df_product['Product'].nunique()}")
+else:
+    print("WARNING: No rows returned for this date range.")
 
 conn.close()
+
 
 # ── Write parquet ─────────────────────────────────────────────────────────────
 
 ANALYST_DIR.mkdir(parents=True, exist_ok=True)
+
 PRODUCT_DIR.mkdir(parents=True, exist_ok=True)
 
 print(f"\nWriting analyst parquet  → {ANALYST_OUT.name}...")

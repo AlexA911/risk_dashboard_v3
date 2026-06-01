@@ -36,8 +36,11 @@ import pandas as pd
 from pathlib import Path
 from datetime import date
 from data.reference import (
-    EXCLUDED_OFFICES, hawk_sector,
-    HAWK_ANALYST_PNL_COL, HAWK_PRODUCT_PNL_COL,
+    EXCLUDED_OFFICES,
+    hawk_sector,
+    HAWK_PRODUCT_PNL_MAP,
+    HAWK_ANALYST_PNL_COL,
+    HAWK_PRODUCT_PNL_COL,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -182,7 +185,6 @@ def get_sector_pnl(location: str = "Total") -> pd.DataFrame:
 
 
 # ── Product P&L ───────────────────────────────────────────────────────────────
-
 def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.DataFrame:
     """
     Product-level P&L for the product drill-down table.
@@ -192,12 +194,19 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
         sector:   dashboard sector name to filter by, or None for all
 
     Returns:
-        Product     — HAWK product code
-        ProductDesc — full product description (where available)
+        Product     — ProductRisk product name (joins to db_summary product rows)
+        ProductDesc — full HAWK product description (where available)
         Sector      — dashboard sector
         PnL_1D      — GrossPnL for most recent trading day
         PnL_5D      — cumulative GrossPnL over last 5 trading days
+
+    Translates HAWK exchange codes → ProductRisk product names via
+    HAWK_PRODUCT_PNL_MAP so the frontend join works. Multiple HAWK codes
+    mapping to the same product name (e.g. RB1 + ICENYH → 'RBOB Gasoline')
+    are summed automatically by the groupby.
     """
+    from data.reference import HAWK_PRODUCT_PNL_MAP
+
     df = _load_parquet(PRODUCT_DIR)
     df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
 
@@ -217,18 +226,29 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
     if sector:
         df = df[df["Sector"] == sector]
 
-    last_5 = _last_n_dates(df, 5)
-    last_1  = last_5[:1]
-
-    if not last_5:
+    # Translate HAWK ticker → ProductRisk product name. Tickers absent from
+    # the map are dropped (no ProductRisk row to join to anyway).
+    df = df[df["Product"].isin(HAWK_PRODUCT_PNL_MAP)]
+    if df.empty:
         return pd.DataFrame(columns=["Product", "ProductDesc", "Sector", "PnL_1D", "PnL_5D"])
 
+    df = df.copy()
+    # Capture HAWK ProductDesc before overwriting Product, so we can surface
+    # the descriptive label alongside the canonical name.
     desc_map = (
         df[df["ProductDesc"].notna()]
         .groupby("Product")["ProductDesc"]
         .first()
         .to_dict()
     )
+    df["ProductDesc_HAWK"] = df["Product"].map(desc_map)
+    df["Product"]          = df["Product"].map(HAWK_PRODUCT_PNL_MAP)
+
+    last_5 = _last_n_dates(df, 5)
+    last_1 = last_5[:1]
+
+    if not last_5:
+        return pd.DataFrame(columns=["Product", "ProductDesc", "Sector", "PnL_1D", "PnL_5D"])
 
     def _agg(date_filter: list) -> pd.DataFrame:
         subset = df[df["ReportDate"].isin(date_filter)]
@@ -247,11 +267,20 @@ def get_product_pnl(location: str = "Total", sector: str | None = None) -> pd.Da
     pnl_5d = _agg(last_5).rename(columns={"PnL": "PnL_5D"})
 
     result = pnl_1d.merge(pnl_5d, on=["Product", "Sector"], how="outer")
-    result["ProductDesc"] = result["Product"].map(desc_map)
+
+    # One ProductRisk name may now correspond to several HAWK tickers; pick
+    # the first non-null HAWK ProductDesc as the descriptor.
+    rename_desc = (
+        df[df["ProductDesc_HAWK"].notna()]
+        .groupby("Product")["ProductDesc_HAWK"]
+        .first()
+        .to_dict()
+    )
+    result["ProductDesc"] = result["Product"].map(rename_desc)
 
     return result[["Product", "ProductDesc", "Sector", "PnL_1D", "PnL_5D"]]
 
-
+# ── Analyst P&L ───────────────────────────────────────────────────────────────
 # ── Analyst P&L ───────────────────────────────────────────────────────────────
 
 def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
@@ -262,11 +291,21 @@ def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
         location: office name or 'Total' for firm-wide
 
     Returns:
-        Analyst   — PrimaryITM (3-letter code, joins to AnalystRisk.Analyst)
+        Analyst   — ITM (sub-account code, joins to AnalystRisk.Analyst)
         Office    — office name
         PnL_1D    — GrossPnL for most recent trading day
         PnL_5D    — cumulative GrossPnL over last 5 trading days
-        PnL_YTD   — cumulative GrossPnL from Jan 1st of current year to today
+        PnL_YTD   — cumulative NetPnL from Jan 1st of current year to today
+
+    Note: HAWK breaks P&L down per ITM (sub-account), not per PrimaryITM.
+    Sub-accounts like FIL3, FIL9 etc. each carry their own P&L on the
+    HAWK frontend, so we filter and group by ITM here. PrimaryITM is only
+    used for office/sector/product aggregations where we deliberately want
+    each trader counted once.
+
+    1D/5D use GrossPnL (matches what traders watch intraday).
+    YTD uses NetPnL — gross less commissions/fees/rebates — which is the
+    figure that matters for performance review and compensation.
     """
     df = _load_parquet(ANALYST_DIR)
     df = df[~df["Office"].isin(EXCLUDED_OFFICES)]
@@ -281,32 +320,32 @@ def get_analyst_pnl(location: str = "Total") -> pd.DataFrame:
     if not last_5:
         return pd.DataFrame(columns=["Analyst", "Office", "PnL_1D", "PnL_5D", "PnL_YTD"])
 
-    def _agg_analyst(date_filter=None, ytd=False) -> pd.DataFrame:
+    def _agg_analyst(date_filter=None, ytd=False, pnl_col=HAWK_ANALYST_PNL_COL) -> pd.DataFrame:
         if ytd:
             subset = df[df["ReportDate"] >= ytd_start]
         else:
             subset = df[df["ReportDate"].isin(date_filter)]
 
-        # Sum sub-accounts to PrimaryITM level
+        # Group by ITM — each sub-account is a distinct analyst row in
+        # the dashboard and joins to AnalystRisk.Analyst.
         return (
             subset
-            .groupby(["PrimaryITM", "Office"], as_index=False)
-            .agg(PnL=(HAWK_ANALYST_PNL_COL, "sum"))
+            .groupby(["ITM", "Office"], as_index=False)
+            .agg(PnL=(pnl_col, "sum"))
         )
 
     pnl_1d  = _agg_analyst(date_filter=last_1).rename(columns={"PnL": "PnL_1D"})
     pnl_5d  = _agg_analyst(date_filter=last_5).rename(columns={"PnL": "PnL_5D"})
-    pnl_ytd = _agg_analyst(ytd=True).rename(columns={"PnL": "PnL_YTD"})
+    pnl_ytd = _agg_analyst(ytd=True, pnl_col="NetPnL").rename(columns={"PnL": "PnL_YTD"})
 
     result = (
         pnl_1d
-        .merge(pnl_5d,  on=["PrimaryITM", "Office"], how="outer")
-        .merge(pnl_ytd, on=["PrimaryITM", "Office"], how="outer")
+        .merge(pnl_5d,  on=["ITM", "Office"], how="outer")
+        .merge(pnl_ytd, on=["ITM", "Office"], how="outer")
     )
 
-    result = result.rename(columns={"PrimaryITM": "Analyst"})
+    result = result.rename(columns={"ITM": "Analyst"})
     return result[["Analyst", "Office", "PnL_1D", "PnL_5D", "PnL_YTD"]]
-
 
 # ── Analyst product P&L ───────────────────────────────────────────────────────
 
@@ -315,22 +354,41 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     Product-level YTD GrossPnL for a single analyst's detail panel.
 
     Args:
-        analyst: PrimaryITM code (e.g. 'MRN')
+        analyst: ITM code (e.g. 'FIL3', 'MRN')
 
     Returns:
-        Product   — HAWK product code
+        Product   — ProductRisk product name (joins to AnalystTab product rows)
         PnL_YTD   — cumulative GrossPnL from Jan 1st of current year to today
+
+    Note: filters by ITM, not PrimaryITM. Each sub-account (e.g. FIL3 vs FIL9)
+    has its own distinct P&L in HAWK and should be queried independently.
+
+    Translates HAWK exchange codes → ProductRisk product names via
+    HAWK_PRODUCT_PNL_MAP so the frontend join with the product breakdown
+    table works. Multiple tickers mapping to the same name (e.g. BCO + BCOC
+    + BCOP → 'ICE Brent Crude') are summed.
     """
+    from data.reference import HAWK_PRODUCT_PNL_MAP
+
     df = _load_parquet(PRODUCT_DIR)
 
-    # Filter to analyst — use PrimaryITM to capture sub-accounts
-    df = df[df["PrimaryITM"] == analyst]
+    # Filter to analyst by ITM — each sub-account has independent P&L.
+    df = df[df["ITM"] == analyst]
 
     ytd_start = _ytd_start()
     df = df[df["ReportDate"] >= ytd_start]
 
     if df.empty:
         return pd.DataFrame(columns=["Product", "PnL_YTD"])
+
+    # Translate HAWK ticker → ProductRisk product name. Tickers absent from
+    # the map are dropped (no ProductRisk row to join to).
+    df = df[df["Product"].isin(HAWK_PRODUCT_PNL_MAP)]
+    if df.empty:
+        return pd.DataFrame(columns=["Product", "PnL_YTD"])
+
+    df = df.copy()
+    df["Product"] = df["Product"].map(HAWK_PRODUCT_PNL_MAP)
 
     result = (
         df
@@ -341,7 +399,6 @@ def get_analyst_product_pnl(analyst: str) -> pd.DataFrame:
     )
 
     return result[["Product", "PnL_YTD"]]
-
 
 # ── Roll Risk product P&L ─────────────────────────────────────────────────────
 

@@ -23,7 +23,7 @@ import CardContent from "@mui/material/CardContent";
 import Typography from "@mui/material/Typography";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
-import { getLocationTable, getAssetClassTableGrouped, getProductTableBySector, getHawkOfficePnl } from "../api/client";
+import { getLocationTable, getAssetClassTableGrouped, getProductTableBySector, getHawkOfficePnl, getHawkProductPnl } from "../api/client";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -129,9 +129,12 @@ function ProductNameRenderer({ value, data }) {
 
 // ─── Column builder ───────────────────────────────────────────────────────────
 
+// Replace the buildColumns function body:
+
 function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort = true) {
   const varCurrent  = varMode === "100D" ? "VaR_100D"      : "VaR_10D";
   const varDelta    = varMode === "100D" ? "Delta_100D"    : "Delta_10D";
+  const varEOD      = varMode === "100D" ? "VaR_100D_EOD"  : "VaR_10D_EOD";   // ADD
   const varDeltaT1  = varMode === "100D" ? "Delta_100D_t1" : "Delta_10D_t1";
 
   return [
@@ -145,9 +148,10 @@ function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort 
     {
       headerName: "VAR",
       children: [
-        { field: varCurrent,  headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 90, type: "numericColumn", sortable: allowSort, ...(allowSort && { sort: "desc" }) },
-        { field: varDelta,    headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: allowSort },
-        { field: varDeltaT1,  headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90, type: "numericColumn", sortable: allowSort },
+        { field: varCurrent, headerName: "Current",  cellRenderer: NumRenderer,   flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort, ...(allowSort && { sort: "desc" }) },
+        { field: varDelta,   headerName: "Δ SOD",    cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },
+        { field: varEOD,     headerName: "EOD",      cellRenderer: NumRenderer,   flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },  // ADD
+        { field: varDeltaT1, headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },
       ],
     },
     {
@@ -167,6 +171,7 @@ function buildColumns(varMode, nameRenderer, nameHeader = "Location", allowSort 
       children: [
         { field: "Margin",          headerName: "Current", cellRenderer: NumRenderer,   flex: 1, minWidth: 100, type: "numericColumn", sortable: allowSort },
         { field: "Delta_Margin",    headerName: "Δ SOD",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },
+        { field: "Margin_EOD",      headerName: "EOD",     cellRenderer: NumRenderer,   flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },  // ADD
         { field: "Delta_Margin_t1", headerName: "Δ t-1",   cellRenderer: DeltaRenderer, flex: 1, minWidth: 90,  type: "numericColumn", sortable: allowSort },
       ],
     },
@@ -317,13 +322,26 @@ export default function LocationTableAG({
     setExpandedSector(sector);
     if (productState[sector]?.data) return;
     setProductState(prev => ({ ...prev, [sector]: { loading: true, error: null, data: null } }));
-    getProductTableBySector(sectorApiLoc, sector)
-      .then(r => {
+    Promise.all([
+      getProductTableBySector(sectorApiLoc, sector),
+      getHawkProductPnl(sectorApiLoc, sector),
+    ])
+      .then(([varRes, pnlRes]) => {
         const colour = SECTOR_COLOURS[sector] ?? "#94a3b8";
-        const rows = (r.data.data || []).map(row => ({
+
+        // Build product → { _pnl1d, _pnl5d } lookup
+        const pnlMap = {};
+        for (const row of (pnlRes.data.data || [])) {
+          pnlMap[row.Product] = { _pnl1d: row.PnL_1D, _pnl5d: row.PnL_5D };
+        }
+
+        const rows = (varRes.data.data || []).map(row => ({
           ...row,
-          name: row.Product,
+          name:          row.Product,
           _sectorColour: colour,
+          // Subgroup header rows won't match any product → stays null → renders "—"
+          _pnl1d:        pnlMap[row.Product]?._pnl1d ?? null,
+          _pnl5d:        pnlMap[row.Product]?._pnl5d ?? null,
         }));
         setProductState(prev => ({ ...prev, [sector]: { loading: false, error: null, data: rows } }));
       })

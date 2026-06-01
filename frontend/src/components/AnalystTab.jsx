@@ -131,7 +131,7 @@ function buildAnalystCols(varMode) {
       children: [
         { field: "_pnl1d",  headerName: "1D",  cellRenderer: PnlRenderer, flex: 1, minWidth: 85, type: "numericColumn" },
         { field: "_pnl5d",  headerName: "5D",  cellRenderer: PnlRenderer, flex: 1, minWidth: 85, type: "numericColumn" },
-        { field: "_pnlytd", headerName: "YTD", cellRenderer: PnlRenderer, flex: 1, minWidth: 90, type: "numericColumn" },
+        { field: "_pnlytd", headerName: "Net YTD", cellRenderer: PnlRenderer, flex: 1, minWidth: 90, type: "numericColumn" },
       ],
     },
   ];

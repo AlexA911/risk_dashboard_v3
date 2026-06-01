@@ -31,3 +31,4 @@ export const getHawkAnalystProductPnl    = (analyst)                            
 // ── HAWK P&L ──────────────────────────────────────────────────────────────────
 export const getHawkOfficePnl            = ()                                              => api.get("/api/hawk-office-pnl");
 export const getHawkRollPnl              = ()                                              => api.get("/api/hawk-roll-pnl");
+export const getHawkProductPnl           = (location, sector)                              => api.get("/api/hawk-product-pnl", { params: { location, sector } });

@@ -60,7 +60,7 @@ SECTOR_ORDER = [
 # ─── 4. FF_Risk: Sector → Asset classes ──────────────────────────────────────
 
 SECTOR_ASSET_CLASSES = {
-    "Energy":     ["Oils - Crude", "WTI", "NG", "Oils - Refined", "Oils"],
+    "Energy":     ["Oils", "Oils - Crude", "WTI", "Natural Gas", "Oil Refined", "Power & Carbon"],
     "Rates":      ["USD Rates", "GBP Rates", "EUR Rates", "CAD Rates", "AUD Rates", "CHF Rates"],
     "Equities":   ["Equity Indices"],
     "Volatility": ["Volatility Indices"],
@@ -107,10 +107,11 @@ SECTOR_MAP = {
 
 SUBGROUP_NETTED_ASSET_CLASSES = {
     # Energy
-    "Oils":               ["Oils", "Oils - Crude"],
+    "Oils Total":         ["Oils"],
+    "Oils - Crude":       ["Oils - Crude"],
     "WTI":                ["WTI"],
-    "Natural Gas":        ["NG"],
     "Oil Refined":        ["Oils - Refined"],
+    "Natural Gas":        ["NG"],
     "Power & Carbon":     [],
     # Rates
     "USD":                ["USD Rates"],
@@ -143,7 +144,7 @@ SUBGROUP_NETTED_ASSET_CLASSES = {
 # ─── 7. FF_Risk: Subgroup display order per sector ────────────────────────────
 
 SUBGROUP_ORDER = {
-    "Energy":     ["Oils", "WTI", "Natural Gas", "Oil Refined", "Power & Carbon"],
+    "Energy":     ["Oils Total", "Oils - Crude", "WTI", "Oil Refined", "Natural Gas", "Power & Carbon"],
     "Rates":      ["USD", "GBP", "EUR", "CAD", "AUD", "CHF"],
     "Metals":     ["Precious", "Base"],
     "Ags":        ["Grains", "Livestock", "Dairy"],
@@ -152,20 +153,20 @@ SUBGROUP_ORDER = {
 
 
 # ─── 8. FF_Risk: Product → Subgroup mapping ───────────────────────────────────
-# Used by db_office.py to interleave subgroup header rows in the product table.
+# Used by db_summary.py to interleave subgroup header rows in the product table.
 
 PRODUCT_SUBGROUP = {
     # Energy: Oils
-    "Abu Dhabi Murban Crude Oil Futures":                      "Oils",
-    "Brent Crude":                                             "Oils",
-    "Brent Crude Oil":                                         "Oils",
-    "Dubai 1st line Crude Futures":                            "Oils",
-    "Dubai Crude Oil":                                         "Oils",
-    "ICE Brent Crude":                                         "Oils",
-    "ICE Murban Crude Oil Futures":                            "Oils",
-    "Murban Crude Oil":                                        "Oils",
+    "Abu Dhabi Murban Crude Oil Futures":                      "Oils - Crude",
+    "Brent Crude":                                             "Oils - Crude",
+    "Brent Crude Oil":                                         "Oils - Crude",
+    "Dubai 1st line Crude Futures":                            "Oils - Crude",
+    "Dubai Crude Oil":                                         "Oils - Crude",
+    "ICE Brent Crude":                                         "Oils - Crude",
+    "ICE Murban Crude Oil Futures":                            "Oils - Crude",
+    "Murban Crude Oil":                                        "Oils - Crude",
+    "Nymex Brent Crude":                                       "Oils - Crude",
     # Energy: WTI
-    "Nymex Brent Crude":                                       "WTI",
     "Nymex Light Sweet":                                       "WTI",
     "WTI Crude Oil":                                           "WTI",
     "ICE WTI Crude":                                           "WTI",
@@ -559,4 +560,187 @@ HAWK_ROLL_PRODUCT_MAP: dict[str, str] = {
     "NQ":     "e-Mini Nasdaq 100",
     "YM":     "Mini Dow",
     "Z":      "FTSE",
+}
+
+# ─── 13. HAWK: Product ticker → ProductRisk name for summary product P&L ─────
+#
+# Maps HAWK exchange codes → FF_Risk.ProductRisk product names.
+# Used by db_hawk.get_product_pnl() to translate before returning,
+# so the frontend join (by Product name) works correctly.
+#
+# Rules:
+#   - Tickers with no matching ProductRisk row are omitted (silently no P&L shown)
+#   - Multiple tickers mapping to the same name are summed (e.g. BCOC + BCOP + BCO)
+#   - Calendar spread / micro variants included where ProductRisk has a row
+#   - Volatility products handled via HAWK_PRODUCT_SECTOR_OVERRIDES (section 10)
+#     but still need a name mapping here to join to ProductRisk
+#   - HAWK_ROLL_PRODUCT_MAP (section 12) covers Rates bonds + Equities;
+#     this map covers everything else (Energy, FX, Softs, Ags, Metals, Crypto)
+#     PLUS the STIRs that ROLL_MAP omits (Euribor, SONIA, SOFR etc.)
+
+HAWK_PRODUCT_PNL_MAP: dict[str, str] = {
+
+    # ── Energy: Oils - Crude ──────────────────────────────────────────────
+    "BCO":    "ICE Brent Crude",
+    "BCOC":   "ICE Brent Crude",            # calendar spread — summed with BCO
+    "BCOP":   "ICE Brent Crude",            # calendar spread — summed with BCO
+    "NBZ":    "Nymex Brent Crude",
+    "ICEDBI": "Dubai 1st line Crude Futures",
+    # ADM (Murban) — no ProductRisk row yet, omitted
+
+    # ── Energy: WTI ───────────────────────────────────────────────────────
+    "CL":     "Nymex Light Sweet",
+    "CLC":    "Nymex Light Sweet",          # calendar spread — summed with CL
+    "CLP":    "Nymex Light Sweet",          # calendar spread — summed with CL
+    "WBS":    "ICE WTI Crude",
+    # MCL (Micro WTI) — no ProductRisk row, omitted
+    # ICEHOU (Permian WTI) — no ProductRisk row, omitted
+
+    # ── Energy: Natural Gas ───────────────────────────────────────────────
+    "NG":     "Natural Gas",
+    "GCM":    "ICE UK Natural Gas",
+    "MNG":    "Micro Henry Hub Natural Gas",
+    "HP":     "Natural Gas (Henry Hub) Penultimate Financial Futures",
+    "NYMHH":  "Natural Gas (HH) (Henry Hub) Last-day Financial Futures",
+
+    # ── Energy: Oil Refined ───────────────────────────────────────────────
+    "G":      "ICE LS GasOil",
+    "HO":     "NY Harbor ULSD",
+    "RB1":    "RBOB Gasoline",
+    "ICENYH": "RBOB Gasoline",              # ICE listing — summed with RB1
+    "ICEO":   "Heating Oil",
+
+    # ── Rates: USD (STIRs + bonds) ────────────────────────────────────────
+    # Bonds already in HAWK_ROLL_PRODUCT_MAP; duplicated here so this map
+    # is self-contained for the summary product view.
+    "TY":     "US 10Yr T-Note",
+    "TU":     "US 2Yr T-Note",
+    "FV":     "US 5Yr T-Note",
+    "TB":     "US Ultra Bond",
+    "UBE":    "US Ultra Bond",              # same instrument as TB — summed
+    "CMETN":  "US Ultra 10Yr T-Note",
+    "FF":     "30 Day Fed Fund",
+    "CMESR1": "1-Month SOFR",
+    "CMESR3": "3-Month SOFR",
+
+    # ── Rates: GBP ────────────────────────────────────────────────────────
+    "R":      "Gilt (Long)",
+    "I":      "Three Month SONIA (ICE)",
+
+    # ── Rates: EUR ────────────────────────────────────────────────────────
+    "FGBL":   "Bund",
+    "FGBM":   "Bobl",
+    "FGBS":   "Schatz",
+    "FGBX":   "Buxl",
+    "FOAT":   "French 10Yr Oat",
+    "FBTP":   "Italian BTP",
+    "FBTS":   "Italian 2Yr BTP",
+    "ICEER3": "Euribor",
+
+    # ── Rates: CAD ────────────────────────────────────────────────────────
+    "CGB":    "CGB",
+    "CGF":    "CGF",
+    "CGZ":    "CGZ",
+    "CRA":    "One Month CORRA Futures",
+    "3YR":    "Three-Month CORRA Futures",
+
+    # ── Rates: AUD ────────────────────────────────────────────────────────
+    "SFEIR":  "10Yr Aus Bond",
+    "SFEYT":  "3Yr Aus Bill",
+    # SFEXT / SFEVT — no clear ProductRisk match, omitted
+
+    # ── Equities ──────────────────────────────────────────────────────────
+    "ES":     "e-Mini S&P 500",
+    "NQ":     "e-Mini Nasdaq 100",
+    "YM":     "Mini Dow",
+    "FDAX":   "Dax",
+    "FDXM":   "Mini-Dax",
+    "FESX":   "EuroStocks",
+    "FSMI":   "Swiss Market Index (SMI)",
+    "FXXP":   "STOXX Europe 600",
+    "Z":      "FTSE",
+    "CMEMES": "Micro E-Mini S&P 500 Futures",
+    "CMEMNQ": "Micro E-Mini Nasdaq 100",
+
+    # ── Volatility ────────────────────────────────────────────────────────
+    "EFVS":   "VSTOXX Mini",
+    "VIXXF":  "CBOE Volatility Index Future",
+
+    # ── FX ────────────────────────────────────────────────────────────────
+    "AD":     "AUD/USD-FX",
+    "CD":     "CAD/USD-FX",
+    "EU":     "EUR/USD-FX",
+    "GBP":    "GBP/USD-FX",
+    "J1":     "JPY/USD-FX",
+    "SF":     "CHF/USD-FX",
+    "BR":     "BRL/USD-FX (CME)",
+    "M6A":    "E-micro AUD/USD-FX",
+    "M6E":    "E-micro EUR/USD-FX",
+    "CMEMJY": "MICRO USD/JPY FUTURES",
+    "DX":     "US Dollar Index",
+    # M6B, CRP, RF, CMECNH, CMEMCD, CMEMSF, CMESIR, SGXUC, MEXP — no ProductRisk match
+
+    # ── Softs: Cocoa ──────────────────────────────────────────────────────
+    "COC":    "Cocoa (Liffe)",
+    "COCOA":  "Cocoa (ICE US)",
+    "COCC":   "Cocoa (Liffe)",              # calendar spread — summed with COC
+    "COCP":   "Cocoa (Liffe)",              # calendar spread — summed with COC
+
+    # ── Softs: Coffee ─────────────────────────────────────────────────────
+    # KF and LRC confirmed separately (see notes below — pending ProductDesc check)
+    "KF":     "Coffee (Liffe)",             # CONFIRM: Robusta (Liffe)
+    "KFC":    "Coffee (Liffe)",             # calendar spread
+    "KFP":    "Coffee (Liffe)",             # calendar spread
+    "LRC":    'Coffee "C"',                 # CONFIRM: Arabica (ICE US) — pending
+
+    # ── Softs: Sugar ──────────────────────────────────────────────────────
+    "SB":     "Sugar No11",
+    "SBC":    "Sugar No11",                 # calendar spread — summed with SB
+    "SBP":    "Sugar No11",                 # calendar spread — summed with SB
+    "WSUG":   "Sugar (Liffe) White",
+
+    # ── Softs: Cotton ─────────────────────────────────────────────────────
+    "CT":     "Cotton No2",
+    "CTC":    "Cotton No2",                 # calendar spread — summed with CT
+    "CTP":    "Cotton No2",                 # calendar spread — summed with CT
+
+    # ── Softs: OJ ─────────────────────────────────────────────────────────
+    "OJ":     "FCOJ",
+
+    # ── Ags: Grains ───────────────────────────────────────────────────────
+    "BO":     "Soybean Oil (CBOT)",
+    "CRN":    "Corn (CBOT)",
+    "CSB":    "Soybean (CBOT)",
+    "EBM":    "Milling Wheat",
+    "EMA":    "Soybean Meal (CBOT)",        # CONFIRM: EMA = Soy Meal (Euronext?)
+    "SM":     "Soybean Meal (CBOT)",        # CONFIRM: SM = Soy Meal (CBOT) — may sum with EMA
+    "KW":     "Wheat (KCBT)",
+    "RS":     "Rapeseed",
+    "RRI":    "Rough Rice",
+    "WH":     "Wheat (CBOT)",
+    # ECO (Canola?), OAT — no ProductRisk match, omitted
+
+    # ── Ags: Livestock ────────────────────────────────────────────────────
+    "FCAT":   "Feeder Cattle",
+    "LCAT":   "Live Cattle",
+    "LN":     "Lean Hogs",
+
+    # ── Metals: Precious ──────────────────────────────────────────────────
+    "GD":           "Gold (COMEX)",
+    "COMEX:FUT:1OZ":"Gold (COMEX)",         # physical gold cert — summed with GD
+    "PL":           "Platinum",
+    "SI":           "Silver (COMEX)",
+    "CMESIL":       "Micro Silver (1000 Troy Oz)",
+    # PA (Palladium), MGC (Micro Gold), MHG (Micro Copper) — no ProductRisk match
+
+    # ── Metals: Base ──────────────────────────────────────────────────────
+    "HG":     "Copper (COMEX)",
+    "SGXFEF": "TSI Iron Ore CFR China 62% Index",
+    # CMEALI (Aluminium) — no ProductRisk match
+
+    # ── Crypto ────────────────────────────────────────────────────────────
+    "CMEBTC":  "Bitcoin Futures (CME)",
+    "CMEMBT":  "Micro Bitcoin Futures",
+    "CMEETHM": "Micro Ether Futures (CME)",
+    # CMEETH (Ether Futures CME) — not in ProductRisk list, omitted
 }

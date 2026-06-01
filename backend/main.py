@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 
-from data import db_office
+from data import db_summary
 from data import db_analyst
 from data import db_rollview
 from data import db_hawk
@@ -30,9 +30,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ── Simple in-memory cache ────────────────────────────────────────────────────
 _cache: dict = {}
 _CACHE_TTL   = 60  # seconds
+
 
 def get_cached(key: str, fn):
     now = time.time()
@@ -53,6 +55,12 @@ def clean(df: pd.DataFrame) -> list:
     ]
 
 
+def sanitise(v):
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    return v
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Health
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,9 +77,11 @@ def health():
 @app.get("/api/locations")
 def locations():
     try:
-        df = get_cached("locations", db_office.get_offices)
+        df = get_cached("locations", db_summary.get_offices)
         return {"locations": df["Office"].tolist()}
     except Exception as e:
+        import traceback
+        print(f"[LOCATIONS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -83,8 +93,10 @@ def locations():
 def metrics(location: str = "Total", confidence: float = 95.0, lookback: int = 100):
     try:
         key = f"metrics:{location}:{confidence}:{lookback}"
-        return get_cached(key, lambda: db_office.get_metrics(location, confidence, lookback))
+        return get_cached(key, lambda: db_summary.get_metrics(location, confidence, lookback))
     except Exception as e:
+        import traceback
+        print(f"[METRICS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -95,8 +107,10 @@ def metrics(location: str = "Total", confidence: float = 95.0, lookback: int = 1
 @app.get("/api/vix-margin")
 def vix_margin():
     try:
-        return get_cached("vix-margin", db_office.get_vix_margin)
+        return get_cached("vix-margin", db_summary.get_vix_margin)
     except Exception as e:
+        import traceback
+        print(f"[VIX-MARGIN ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -107,13 +121,15 @@ def vix_margin():
 @app.get("/api/last-snapshot")
 def last_snapshot():
     try:
-        return get_cached("last-snapshot", db_office.get_last_snapshot)
+        return get_cached("last-snapshot", db_summary.get_last_snapshot)
     except Exception as e:
+        import traceback
+        print(f"[LAST-SNAPSHOT ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rolling VaR + Margin chart
+# Rolling VaR + Margin charts
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/rolling-chart")
@@ -125,9 +141,11 @@ def rolling_chart(
 ):
     try:
         key = f"rolling:{location}:{confidence}:{lookback}:{days}"
-        df = get_cached(key, lambda: db_office.get_rolling_chart(location, confidence, lookback, days))
+        df = get_cached(key, lambda: db_summary.get_rolling_chart(location, confidence, lookback, days))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ROLLING-CHART ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -141,9 +159,11 @@ def sector_chart(
 ):
     try:
         key = f"sector-chart:{location}:{sector}:{confidence}:{lookback}:{days}"
-        df = get_cached(key, lambda: db_office.get_sector_chart(location, sector, confidence, lookback, days))
+        df = get_cached(key, lambda: db_summary.get_sector_chart(location, sector, confidence, lookback, days))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[SECTOR-CHART ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -157,67 +177,51 @@ def product_chart(
 ):
     try:
         key = f"product-chart:{location}:{product}:{confidence}:{lookback}:{days}"
-        df = get_cached(key, lambda: db_office.get_product_chart(location, product, confidence, lookback, days))
+        df = get_cached(key, lambda: db_summary.get_product_chart(location, product, confidence, lookback, days))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[PRODUCT-CHART ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Location summary table
+# Location / sector / product tables (Summary tab)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/location-table")
 def location_table(location: str = "Total"):
     try:
         key = f"location-table:{location}"
-        df = get_cached(key, lambda: db_office.get_location_table(location))
+        df = get_cached(key, lambda: db_summary.get_location_table(location))
         return {"data": clean(df)}
     except Exception as e:
         import traceback
         print(f"[LOCATION-TABLE ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HAWK P&L — office level (from parquet cache)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/api/hawk-office-pnl")
-def hawk_office_pnl():
-    try:
-        key = "hawk-office-pnl"
-        df = get_cached(key, lambda: db_hawk.get_office_pnl())
-        return {"data": clean(df)}
-    except Exception as e:
-        import traceback
-        print(f"[HAWK ERROR] {traceback.format_exc()}")
-        raise HTTPException(500, str(e))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Analyst summary table (Summary tab drill-down — existing)
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/analyst-table")
 def analyst_table(location: str = "Total"):
     try:
         key = f"analyst-table:{location}"
-        df = get_cached(key, lambda: db_office.get_analyst_table(location))
+        df = get_cached(key, lambda: db_summary.get_analyst_table(location))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ANALYST-TABLE ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Asset class tables
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/asset-class-table")
 def asset_class_table(location: str = "Total"):
     try:
         key = f"asset-class-table:{location}"
-        df = get_cached(key, lambda: db_office.get_asset_class_table(location))
+        df = get_cached(key, lambda: db_summary.get_asset_class_table(location))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ASSET-CLASS-TABLE ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -225,25 +229,23 @@ def asset_class_table(location: str = "Total"):
 def asset_class_table_grouped(location: str = "Total"):
     try:
         key = f"asset-class-table-grouped:{location}"
-        df = get_cached(key, lambda: db_office.get_asset_class_table_grouped(location))
+        df = get_cached(key, lambda: db_summary.get_asset_class_table_grouped(location))
         return {"data": clean(df)}
     except Exception as e:
         import traceback
-        print(f"[ERROR] {traceback.format_exc()}")
+        print(f"[ASSET-CLASS-TABLE-GROUPED ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Product tables
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/product-table")
 def product_table(location: str = "Total"):
     try:
         key = f"product-table:{location}"
-        df = get_cached(key, lambda: db_office.get_product_table(location))
+        df = get_cached(key, lambda: db_summary.get_product_table(location))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[PRODUCT-TABLE ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -251,16 +253,17 @@ def product_table(location: str = "Total"):
 def product_table_by_sector(location: str = "Total", sector: str = "Energy"):
     try:
         key = f"product-table-by-sector:{location}:{sector}"
-        df = get_cached(key, lambda: db_office.get_product_table_by_sector(location, sector))
+        df = get_cached(key, lambda: db_summary.get_product_table_by_sector(location, sector))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[PRODUCT-TABLE-BY-SECTOR ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Analyst tab (db_analyst.py)
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 @app.get("/api/analysts")
 def analysts(location: str = "Total"):
@@ -272,7 +275,6 @@ def analysts(location: str = "Total"):
         import traceback
         print(f"[ANALYSTS ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
-
 
 
 @app.get("/api/analyst-chart")
@@ -290,6 +292,8 @@ def analyst_chart(
             analyst, office, confidence, lookback, days))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ANALYST-CHART ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
@@ -307,12 +311,59 @@ def analyst_products(
             analyst, office, confidence, lookback))
         return {"data": clean(df)}
     except Exception as e:
+        import traceback
+        print(f"[ANALYST-PRODUCTS ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/analyst-product-chart")
+def analyst_product_chart(
+    analyst:    str   = Query(...),
+    office:     str   = Query(...),
+    product:    str   = Query(...),
+    confidence: float = Query(95.0),
+    lookback:   int   = Query(100),
+    days:       int   = Query(30),
+):
+    """EOD iVaR history for a single analyst x product."""
+    try:
+        key = f"analyst-product-chart:{analyst}:{office}:{product}:{confidence}:{lookback}:{days}"
+        df = get_cached(key, lambda: db_analyst.get_analyst_product_chart(
+            analyst, office, product, confidence, lookback, days))
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[ANALYST-PRODUCT-CHART ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HAWK P&L — analyst level (from parquet cache)
+# HAWK P&L (from parquet cache)
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/hawk-office-pnl")
+def hawk_office_pnl():
+    try:
+        key = "hawk-office-pnl"
+        df = get_cached(key, lambda: db_hawk.get_office_pnl())
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK-OFFICE-PNL ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/hawk-product-pnl")
+def hawk_product_pnl(location: str = "Total", sector: str = ""):
+    try:
+        key = f"hawk-product-pnl:{location}:{sector}"
+        df = get_cached(key, lambda: db_hawk.get_product_pnl(location, sector))
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK-PRODUCT-PNL ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
 
 @app.get("/api/hawk-analyst-pnl")
 def hawk_analyst_pnl(location: str = "Total"):
@@ -326,10 +377,6 @@ def hawk_analyst_pnl(location: str = "Total"):
         raise HTTPException(500, str(e))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HAWK P&L — analyst product level YTD (from parquet cache)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.get("/api/hawk-analyst-product-pnl")
 def hawk_analyst_product_pnl(analyst: str = Query(...)):
     try:
@@ -342,8 +389,20 @@ def hawk_analyst_product_pnl(analyst: str = Query(...)):
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/hawk-roll-pnl")
+def hawk_roll_pnl():
+    try:
+        key = "hawk-roll-pnl"
+        df = get_cached(key, lambda: db_hawk.get_roll_product_pnl("Total"))
+        return {"data": clean(df)}
+    except Exception as e:
+        import traceback
+        print(f"[HAWK-ROLL-PNL ERROR] {traceback.format_exc()}")
+        raise HTTPException(500, str(e))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Roll Risk
+# Roll Risk (db_rollview.py — returns hierarchical sections, not flat data)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/fi-group-risk")
@@ -351,10 +410,6 @@ def fi_group_risk(location: str = "Total"):
     try:
         key = f"fi-group-risk:{location}"
         sections = get_cached(key, lambda: db_rollview.get_fi_group_risk(location))
-        def sanitise(v):
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                return None
-            return v
         clean_sections = [
             {
                 "section": sec["section"],
@@ -374,10 +429,6 @@ def fi_roll_risk(location: str = "Total"):
     try:
         key = f"fi-roll-risk:{location}"
         sections = get_cached(key, lambda: db_rollview.get_fi_roll_risk(location))
-        def sanitise(v):
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                return None
-            return v
         clean_sections = [
             {
                 "section": sec["section"],
@@ -391,46 +442,10 @@ def fi_roll_risk(location: str = "Total"):
         print(f"[FI-ROLL-RISK ERROR] {traceback.format_exc()}")
         raise HTTPException(500, str(e))
 
-@app.get("/api/hawk-roll-pnl")
-def hawk_roll_pnl():
-    try:
-        df = db_hawk.get_roll_product_pnl("Total")
-        return {"data": df.replace({float("nan"): None}).to_dict(orient="records")}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-@app.post("/api/cache/clear")
-def clear_cache():
-    _cache.clear()
-    return {"cleared": True}
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cache management
 # ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/api/analyst-product-chart")
-def analyst_product_chart(
-    analyst:    str   = Query(...),
-    office:     str   = Query(...),
-    product:    str   = Query(...),
-    confidence: float = Query(95.0),
-    lookback:   int   = Query(100),
-    days:       int   = Query(30),
-):
-    """EOD iVaR history for a single analyst x product."""
-    try:
-        key = f"analyst-product-chart:{analyst}:{office}:{product}:{confidence}:{lookback}:{days}"
-        df = get_cached(key, lambda: db_analyst.get_analyst_product_chart(
-            analyst, office, product, confidence, lookback, days))
-        return {"data": clean(df)}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-
 
 @app.post("/api/cache/clear")
 def clear_cache():

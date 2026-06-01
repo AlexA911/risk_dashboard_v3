@@ -97,9 +97,12 @@ def build_var_table(
     df["Margin"]          = df["_margin_cur"]
     df["Delta_Margin"]    = df["_margin_cur"] - df["_margin_sod"]
     df["Delta_Margin_t1"] = df["_margin_cur"] - df["_margin_t1"]
+    df["VaR_100D_EOD"]    = df["_var100_sod"].abs()
+    df["VaR_10D_EOD"]     = df["_var10_sod"].abs()
+    df["Margin_EOD"]      = df["_margin_sod"]
 
     return df[keys + [
-        "VaR_10D",  "Delta_10D",  "Delta_10D_t1",
-        "VaR_100D", "Delta_100D", "Delta_100D_t1",
-        "Margin",   "Delta_Margin", "Delta_Margin_t1",
+        "VaR_10D", "Delta_10D", "VaR_10D_EOD", "Delta_10D_t1",
+        "VaR_100D", "Delta_100D", "VaR_100D_EOD", "Delta_100D_t1",
+        "Margin", "Delta_Margin", "Margin_EOD", "Delta_Margin_t1",
     ]]

@@ -1,5 +1,5 @@
 """
-data/db_office.py — All VaR queries against FF_Risk database.
+data/db_summary.py — All VaR queries against FF_Risk database.
 
 Tables used:
   dbo.OfficeRisk    — VaR + Margin by office (Futures First = firm-wide)
@@ -172,16 +172,19 @@ def _get_subgroup_netted_var(office_val: str, subgroups: list, sector: str) -> p
         mar_t1     = val(t95,  "Margin")
 
         rows.append({
-            "Subgroup":        sg,
-            "_rowType":        "subgroup",
-            "VaR_100D":        abs(var100_cur) if var100_cur is not None else None,
-            "Delta_100D":      delta(var100_cur, var100_sod),
-            "Delta_100D_t1":   delta(var100_cur, var100_t1),
-            "VaR_10D":         abs(var10_cur)  if var10_cur  is not None else None,
-            "Delta_10D":       delta(var10_cur,  var10_sod),
-            "Delta_10D_t1":    delta(var10_cur,  var10_t1),
-            "Margin":          mar_cur,
-            "Delta_Margin":    delta(mar_cur, mar_sod),
+            "Subgroup": sg,
+            "_rowType": "subgroup",
+            "VaR_100D": abs(var100_cur) if var100_cur is not None else None,
+            "Delta_100D": delta(var100_cur, var100_sod),
+            "VaR_100D_EOD": abs(var100_sod) if var100_sod is not None else None,  # ADD
+            "Delta_100D_t1": delta(var100_cur, var100_t1),
+            "VaR_10D": abs(var10_cur) if var10_cur is not None else None,
+            "Delta_10D": delta(var10_cur, var10_sod),
+            "VaR_10D_EOD": abs(var10_sod) if var10_sod is not None else None,  # ADD
+            "Delta_10D_t1": delta(var10_cur, var10_t1),
+            "Margin": mar_cur,
+            "Delta_Margin": delta(mar_cur, mar_sod),
+            "Margin_EOD": mar_sod,  # ADD
             "Delta_Margin_t1": delta(mar_cur, mar_t1),
         })
 
@@ -775,9 +778,10 @@ def get_product_table(location: str = "Total") -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_asset_class_table_grouped(location: str = "Total") -> pd.DataFrame:
-    _EMPTY = ["Sector", "VaR_10D", "Delta_10D", "Delta_10D_t1",
-              "VaR_100D", "Delta_100D", "Delta_100D_t1",
-              "Margin", "Delta_Margin", "Delta_Margin_t1"]
+    _EMPTY = ["Sector",
+              "VaR_10D", "Delta_10D", "VaR_10D_EOD", "Delta_10D_t1",
+              "VaR_100D", "Delta_100D", "VaR_100D_EOD", "Delta_100D_t1",
+              "Margin", "Delta_Margin", "Margin_EOD", "Delta_Margin_t1"]
 
     dc         = date_context()
     office_val = FUTURES_FIRST_OFFICE if location == "Total" else location
@@ -859,9 +863,9 @@ def get_product_table_by_sector(location: str = "Total", sector: str = "Energy")
                     Margin, Delta_Margin, Delta_Margin_t1
     """
     _EMPTY = ["Subgroup", "Product", "Asset_Class",
-              "VaR_10D", "Delta_10D", "Delta_10D_t1",
-              "VaR_100D", "Delta_100D", "Delta_100D_t1",
-              "Margin", "Delta_Margin", "Delta_Margin_t1"]
+              "VaR_10D", "Delta_10D", "VaR_10D_EOD", "Delta_10D_t1",
+              "VaR_100D", "Delta_100D", "VaR_100D_EOD", "Delta_100D_t1",
+              "Margin", "Delta_Margin", "Margin_EOD", "Delta_Margin_t1"]
 
     asset_classes = SECTOR_ASSET_CLASSES.get(sector, [])
     if not asset_classes:
